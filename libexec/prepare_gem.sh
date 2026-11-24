@@ -16,11 +16,11 @@ set -euo pipefail
 gem=$1; ver=${2:-}; W=${3:-$PWD/rbs-work/$gem}
 mkdir -p "$W"/{pkg,gemhome}; W=$(cd "$W" && pwd)
 if [ -z "$ver" ]; then
-  ver=$(ruby -rjson -rnet/http -e 'puts JSON.parse(Net::HTTP.get(URI("https://rubygems.org/api/v1/gems/#{ARGV[0]}.json")))["version"]' "$gem")
+  ver=$(ruby -Eutf-8 -rjson -rnet/http -e 'puts JSON.parse(Net::HTTP.get(URI("https://rubygems.org/api/v1/gems/#{ARGV[0]}.json")))["version"]' "$gem")
 fi
 echo "gem: $gem $ver"
 ( cd "$W" && gem fetch "$gem" -v "$ver" >/dev/null && tar -xOf "$gem-$ver.gem" data.tar.gz | tar -xz -C pkg )
-src=$(ruby -rjson -rnet/http -e '
+src=$(ruby -Eutf-8 -rjson -rnet/http -e '
   i = JSON.parse(Net::HTTP.get(URI("https://rubygems.org/api/v1/gems/#{ARGV[0]}.json")))
   u = [i["source_code_uri"], i["homepage_uri"]].compact.find { |x| x =~ %r{github\.com|gitlab\.com} }
   puts u.to_s.sub(%r{/(tree|blob)/.*}, "").sub(/\.git\z/, "").sub(%r{\Ahttp://}, "https://")' "$gem")
