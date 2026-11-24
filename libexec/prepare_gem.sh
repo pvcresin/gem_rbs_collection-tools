@@ -24,7 +24,9 @@ src=$(ruby -rjson -rnet/http -e '
   i = JSON.parse(Net::HTTP.get(URI("https://rubygems.org/api/v1/gems/#{ARGV[0]}.json")))
   u = [i["source_code_uri"], i["homepage_uri"]].compact.find { |x| x =~ %r{github\.com|gitlab\.com} }
   puts u.to_s.sub(%r{/(tree|blob)/.*}, "").sub(/\.git\z/, "").sub(%r{\Ahttp://}, "https://")' "$gem")
-if [ -n "$src" ] && [ ! -d "$W/repo" ]; then
+if [ -d "$W/repo" ]; then
+  echo "repo: $W/repo (already there)"
+elif [ -n "$src" ]; then
   tag=$(git ls-remote --tags "$src" 2>/dev/null | awk '{print $2}' | sed 's|refs/tags/||; s|\^{}||' | sort -u |
         grep -E "^(v|release-|releases/v|$gem-|${gem}_|)$ver$" | head -1 || true)
   if [ -n "$tag" ]; then
@@ -37,18 +39,25 @@ else
 fi
 if [ -d "$W/repo" ]; then
   mkdir -p "$W/env"
-  gemspec=$(ls "$W/repo"/*.gemspec 2>/dev/null | head -1 || true)
+  # Dependencies come from the packaged gem's metadata, not the repo's
+  # gemspec: Bundler evaluates a gemspec at startup, and many gemspecs
+  # `require` the library, which would load it before any tracing hook.
+  # Tests load the library from repo/lib (-Ilib).
+  ruby -rrubygems/package -e '
+    spec = Gem::Package.new(ARGV[0]).spec
+    puts %(source "https://rubygems.org")
+    puts %(# #{spec.name} #{spec.version}: dependencies from the gem package; the gem itself loads from repo/lib)
+    spec.dependencies.each do |d|
+      reqs = d.requirement.requirements.map { |op, v| "#{op} #{v}" }.reject { _1 == ">= 0" }
+      puts ["gem #{d.name.dump}", *reqs.map(&:dump)].join(", ") + (d.type == :development ? " # development" : "")
+    end
+  ' "$W/$gem-$ver.gem" > "$W/env/Gemfile"
   {
-    echo 'source "https://rubygems.org"'
-    if [ -n "$gemspec" ]; then
-      echo "gemspec path: \"$W/repo\", name: \"$gem\", development_group: :development"
-    else
-      echo "gem \"$gem\", path: \"$W/repo\""
-    fi
-    [ -f "$W/repo/Gemfile" ] && echo "# The repo's own Gemfile, for reference: $W/repo/Gemfile"
+    [ -f "$W/repo/Gemfile" ] && echo "# Test gems may also be listed in $W/repo/Gemfile"
     echo 'gem "rbs"'
     echo 'gem "lumitrace"'
-  } > "$W/env/Gemfile"
-  echo "env: $W/env/Gemfile (add test gems from the repo's Gemfile if bundle exec fails)"
+    echo 'gem "rbs-trace"'
+  } >> "$W/env/Gemfile"
+  echo "env: $W/env/Gemfile (add test gems from the repo's Gemfile if the tests need more)"
 fi
 echo "workdir: $W"

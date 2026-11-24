@@ -1,2 +1,4 @@
 *.gem
 rbs-work/
+vendor/
+.bundle/

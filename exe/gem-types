@@ -1,0 +1,118 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# gem-types: gather type evidence for a gem from several tools, draft RBS,
+# and verify signatures for ruby/gem_rbs_collection.
+#
+#   gem-types pick      <gem_rbs_collection dir> [--top 500] [--limit 30] [--min-months N]
+#   gem-types prepare   <gem> [version] [workdir]
+#   gem-types collect   --workdir W --ns Foo --test-cmd "..." [--sources a,b] [--require foo] [--lib lib] [--tests test,spec]
+#   gem-types draft     --workdir W [--existing path/to/foo.rbs]
+#   gem-types check     [rbs_check.sh options] -- <command>
+#   gem-types coverage  <file.rbs> <calls file>
+#
+# `collect` saves its settings to W/gem-types.json, so `draft` (and a later
+# `collect --sources x`) can reuse them.
+
+# Use this tool's own Gemfile even when BUNDLE_GEMFILE points at a gem's
+# test environment (as it does around `gem-types check`), and keep the
+# caller's environment for the commands we start.
+CALLER_ENV = ENV.to_h.freeze
+ENV["BUNDLE_GEMFILE"] = File.expand_path("../Gemfile", __dir__)
+require "bundler/setup"
+require "optparse"
+require "json"
+require_relative "../lib/gem_types"
+
+# The scripts run the gem's own code and environment, so they must not
+# inherit this tool's bundle.
+def libexec(script, args)
+  path = File.join(GemTypes::LIBEXEC, script)
+  Bundler.with_unbundled_env do
+    ENV.replace(CALLER_ENV)
+    exec(*(script.end_with?(".rb") ? [RbConfig.ruby, path] : [path]), *args)
+  end
+end
+
+def load_config(workdir, opts)
+  file = File.join(workdir, "gem-types.json")
+  saved = File.exist?(file) ? JSON.parse(File.read(file), symbolize_names: true) : {}
+  repo = opts[:repo] || saved[:repo] || [File.join(workdir, "repo"), File.join(workdir, "pkg")].find { |d| Dir.exist?(d) }
+  env = saved[:env] || {}
+  if env.empty?
+    gemfile = File.join(workdir, "env", "Gemfile")
+    gemhome = File.join(workdir, "gemhome")
+    env = { BUNDLE_GEMFILE: gemfile, GEM_HOME: gemhome, GEM_PATH: gemhome } if File.exist?(gemfile)
+  end
+  ns = opts[:ns] || saved[:ns] or abort "--ns is required"
+  cfg = GemTypes::Config.new(
+    repo: File.expand_path(repo || abort("no repo: pass --repo or run prepare")),
+    lib_dirs: opts[:lib] || saved[:lib_dirs] || ["lib"],
+    test_dirs: opts[:tests] || saved[:test_dirs] || %w[test spec],
+    ns: ns,
+    requires: opts[:requires] || saved[:requires] || [ns.first.gsub("::", "/").gsub(/([a-z\d])([A-Z])/, '\1_\2').downcase],
+    test_cmd: opts[:test_cmd] || saved[:test_cmd],
+    env: env.transform_keys(&:to_s),
+    out: File.join(File.expand_path(workdir), "evidence")
+  )
+  File.write(file, JSON.pretty_generate(cfg.to_h.except(:out)))
+  cfg
+end
+
+def parse(args)
+  opts = {}
+  OptionParser.new do |o|
+    o.on("--workdir DIR") { opts[:workdir] = _1 }
+    o.on("--repo DIR") { opts[:repo] = _1 }
+    o.on("--ns LIST", Array) { opts[:ns] = _1 }
+    o.on("--require LIST", Array) { opts[:requires] = _1 }
+    o.on("--test-cmd CMD") { opts[:test_cmd] = _1 }
+    o.on("--sources LIST", Array) { opts[:sources] = _1 }
+    o.on("--lib LIST", Array) { opts[:lib] = _1 }
+    o.on("--tests LIST", Array) { opts[:tests] = _1 }
+    o.on("--existing FILE") { opts[:existing] = _1 }
+  end.parse!(args)
+  opts[:workdir] or abort "--workdir is required"
+  opts
+end
+
+cmd = ARGV.shift
+case cmd
+when "pick" then libexec("pick_gems.rb", ARGV)
+when "prepare" then libexec("prepare_gem.sh", ARGV)
+when "check" then libexec("rbs_check.sh", ARGV)
+when "coverage" then libexec("coverage_report.rb", ARGV)
+when "collect"
+  opts = parse(ARGV)
+  cfg = load_config(opts[:workdir], opts)
+  (opts[:sources] || GemTypes::Sources::ALL).each do |src|
+    warn "== #{src}"
+    t = Time.now
+    GemTypes::Sources.for(src, cfg).run
+    warn "   #{(Time.now - t).round(1)}s"
+  end
+when "draft"
+  opts = parse(ARGV)
+  cfg = load_config(opts[:workdir], opts)
+  evidence = {}
+  classes = {}
+  shapes = []
+  GemTypes::Sources::ALL.each do |src|
+    s = GemTypes::Sources.for(src, cfg)
+    h = s.read
+    evidence[src] = h unless h.empty?
+    classes = s.classes.merge(classes) if s.respond_to?(:classes)
+    shapes = s.shapes if src == "tracepoint"
+  end
+  existing = opts[:existing] ? GemTypes::RbsReader.read_files([opts[:existing]]).methods : {}
+  merger = GemTypes::Merger.new(evidence: evidence, classes: classes, shapes: shapes, existing: existing)
+  File.write(File.join(opts[:workdir], "draft.rbs"), merger.draft)
+  File.write(File.join(opts[:workdir], "report.md"), merger.report)
+  warn "wrote #{File.join(opts[:workdir], 'draft.rbs')} and report.md"
+  evidence.each { |src, h| warn "  #{src}: #{h.size} methods" }
+else
+  usage = File.read(__FILE__).lines.drop_while { !_1.start_with?("#   gem-types") }
+              .take_while { _1.start_with?("#") }.map { _1.sub(/^# ?/, "") }.join
+  warn usage
+  exit(cmd.nil? || %w[-h --help help].include?(cmd) ? 0 : 1)
+end

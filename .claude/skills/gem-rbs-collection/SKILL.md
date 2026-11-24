@@ -1,6 +1,6 @@
 ---
 name: gem-rbs-collection
-description: Add or fix RBS type signatures for gems in ruby/gem_rbs_collection and prove they match what the gem really does. Covers picking which gems to type, gathering type evidence from the gem's own test suite (TracePoint observation, Lumitrace, static inference with tyda), generating a draft RBS, static checks, runtime type checking of every declared method and of the gem's test suite, triaging type errors, and the fork/commit/PR/merge flow. Use this whenever the user wants to add gems to gem_rbs_collection, choose the next gems to type, update or fix signatures there, verify RBS from that repository, or says things like "gem_rbs_collection に型を追加して", "次に型をつける gem を選んで", "RBS を直して", "この型定義が正しいか確認して", even if the repository is not named.
+description: Add or fix RBS type signatures for gems in ruby/gem_rbs_collection and prove they match what the gem really does. Covers picking which gems to type, gathering type evidence with the gem-types CLI (TracePoint, rbs-trace and Lumitrace over the gem's own test suite; TypeProf, tyda and rbs prototype runtime statically), generating a draft RBS and a source-by-source comparison, static checks, runtime type checking of every declared method and of the gem's test suite, triaging type errors, and the fork/commit/PR/merge flow. Use this whenever the user wants to add gems to gem_rbs_collection, choose the next gems to type, update or fix signatures there, verify RBS from that repository, or says things like "gem_rbs_collection に型を追加して", "次に型をつける gem を選んで", "RBS を直して", "この型定義が正しいか確認して", even if the repository is not named.
 ---
 
 # gem_rbs_collection: pick, type and verify gems
@@ -13,10 +13,11 @@ gem. So types come from evidence (the gem's tests, run under observation),
 and are then verified by running the gem's tests again under RBS runtime
 type checking.
 
-This skill lives in the gem_rbs_collection-tools repository. Its scripts are
-in `bin/` and its guides in `docs/`; below, `$TOOLS` is that repository's
-root (here: three directories above this file). Read `docs/evidence.md` when
-gathering types and `docs/verification.md` before the runtime checks.
+This skill lives in the gem_rbs_collection-tools repository; below, `$TOOLS`
+is that repository's root (three directories above this file). Its CLI is
+`$TOOLS/exe/gem-types` (run `bundle install` in `$TOOLS` once), its guides
+are in `$TOOLS/docs/`. Read `docs/evidence.md` when gathering types and
+`docs/verification.md` before the runtime checks.
 `bin/test` and `bin/init_new_gem` (no `$TOOLS/`) are gem_rbs_collection's own
 scripts, run from its checkout.
 
@@ -48,7 +49,7 @@ Priority, in order:
 3. no new release for a long time (types stay current longer).
 
 ```
-ruby $TOOLS/bin/pick_gems.rb <repo checkout> --top 500 --limit 30 [--min-months 24]
+$TOOLS/exe/gem-types pick <repo checkout> --top 500 --limit 30 [--min-months 24]
 ```
 
 It reads the bestgems.org ranking and rubygems.org, skips gems bundled with
@@ -60,23 +61,23 @@ whose API is mostly C extension or metaprogramming; say why.
 
 ## 2. Gather type evidence
 
-For each gem (details and commands: `docs/evidence.md`):
+For each gem (details: `docs/evidence.md`):
 
-1. `$TOOLS/bin/prepare_gem.sh <gem> [version] <workdir>`: unpacks the gem,
-   clones upstream at the release tag, writes a Gemfile with the gem's dev
-   dependencies plus rbs and lumitrace. Install it, make the test suite
-   pass *without* any tooling first.
-2. Run the suite with `$TOOLS/bin/observe_types.rb` (TracePoint): the argument,
-   block and return types that actually flowed through each public method,
-   per call shape, and which shapes raised.
-3. Run `tyda lib test` (static inference over library + tests) for methods
-   the tests never call and for class/superclass structure.
-4. `$TOOLS/bin/draft_rbs.rb` merges both into a draft RBS with a source
-   comment per method.
-5. Use Lumitrace (`--collect-mode types`, JSON) on a file or line range when
-   you need the types of expressions inside a method (e.g. what a helper
-   really returns). `rbs prototype runtime` only gives a method list; do not
-   trust its types.
+1. `gem-types prepare <gem> [version] <workdir>`: unpacks the gem, clones
+   upstream at the release tag, and writes a Gemfile from the package's
+   dependencies plus rbs, rbs-trace and lumitrace. Install it and make the
+   test suite pass *without* any tooling first (add test gems if needed).
+2. `gem-types collect --workdir W --ns Foo --test-cmd '<how the repo runs its tests>'`
+   runs six sources: TracePoint, rbs-trace and Lumitrace while the tests
+   run; TypeProf and tyda over lib + tests; `rbs prototype runtime` for the
+   method list and parameter names.
+3. `gem-types draft --workdir W [--existing <current .rbs>]` writes
+   `draft.rbs` (one signature per method from the best source, with a
+   comment naming the sources) and `report.md` (every source's signature,
+   the call shapes with normal/raising outcome, and flags: raises in tests,
+   runtime sources disagree, static differs from runtime, no runtime
+   evidence, gaps against the existing RBS).
+4. Work through the flags in the report before writing anything.
 
 The draft is evidence, not the answer. Read the source for every method,
 name parameters properly, and decide unions.
@@ -117,15 +118,15 @@ name parameters properly, and decide unions.
 1. Static: `bin/test gems/<gem>/<version>` and `bundle exec rubocop gems/<gem>`.
 2. Source review: every declaration backed by code (file:line).
 3. Runtime, every declared method: a script in scratch calls the API under
-   `$TOOLS/bin/rbs_check.sh`; `$TOOLS/bin/coverage_report.rb` lists declared
+   `gem-types check`; `gem-types coverage` lists declared
    methods never called. Repeat until empty.
-4. Runtime, the gem's test suite under `rbs_check.sh -o` (log mode) with
+4. Runtime, the gem's test suite under `gem-types check -o` (log mode) with
    `-d rspec|minitest`. Triage every distinct error with the table in
    `docs/verification.md`; fix real ones and rerun until gone.
 
 ## 5. Many gems at once
 
-- Run `pick_gems.rb` once, then hand one gem per subagent (parallel, each
+- Run `gem-types pick` once, then hand one gem per subagent (parallel, each
   with its own workdir and GEM_HOME). Give each the ground rules above, the
   workdir, and ask for: the draft RBS, the observed-types file, open
   questions. Keep repository edits, commits and pushes in the main session.

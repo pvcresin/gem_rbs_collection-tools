@@ -7,7 +7,7 @@
 4. Triage: which type errors are real
 5. Tool limits and workarounds
 
-The scripts live in `bin/` of this repository (`$TOOLS` is its root).
+`$TOOLS` is the root of this repository; run `bundle install` there once.
 All of them use the `rbs` gem's runtime checker (`rbs/test/setup`), which
 wraps every method of the target classes and checks arguments, block and
 return value against the RBS on each call. They were written for rbs 4.x.
@@ -44,10 +44,10 @@ Run it, recording calls for coverage:
 
 ```
 cd $W/work && GEM_HOME=$W/gemhome GEM_PATH=$W/gemhome \
-  $TOOLS/bin/rbs_check.sh -s $W/sig/gems/<gem>/<ver> -t "Foo,Foo::*" \
+  $TOOLS/exe/gem-types check -s $W/sig/gems/<gem>/<ver> -t "Foo,Foo::*" \
     [-l date] -c $W/work/<gem>.calls -- ruby $W/scripts/<gem>.rb
 GEM_HOME=$W/gemhome GEM_PATH=$W/gemhome:$(gem env gempath) \
-  ruby $TOOLS/bin/coverage_report.rb $W/sig/gems/<gem>/<ver>/<gem>.rbs $W/work/<gem>.calls
+  $TOOLS/exe/gem-types coverage $W/sig/gems/<gem>/<ver>/<gem>.rbs $W/work/<gem>.calls
 ```
 
 - Without `-o`, a type error raises and the `t` wrapper prints it as `EXC`.
@@ -80,7 +80,7 @@ scratch with `gem "<gem>", path: "<clone>"` plus the test gems, and point
 
 ```
 cd <clone> && GEM_HOME=$W/gemhome GEM_PATH=$W/gemhome BUNDLE_GEMFILE=… \
-  $TOOLS/bin/rbs_check.sh -s $W/sig/gems/<gem>/<ver> -t "Foo,Foo::*" \
+  $TOOLS/exe/gem-types check -s $W/sig/gems/<gem>/<ver> -t "Foo,Foo::*" \
     -d rspec -o $W/work/<gem>-suite -- bundle exec rspec --format progress
 ```
 

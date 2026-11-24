@@ -3,12 +3,15 @@
 # suite), and prints them in an RBS-like summary. Use it as evidence when
 # writing signatures; it shows only what the run exercised.
 #
-# Usage: RUBYOPT="-r/path/to/observe_types.rb" \
+# Usually run through `gem-types collect`. By hand:
+#        RUBYOPT="-r/path/to/hooks/observe.rb" \
 #        OBSERVE_NS="Timecop,Timecop::*" OBSERVE_OUT=/tmp/timecop.types \
 #        bundle exec rake test
 #   OBSERVE_NS   comma list; "Foo" matches Foo only, "Foo::*" also nested
 #   OBSERVE_OUT  output file (written at exit); OBSERVE_OUT.json is the
-#                machine-readable form used by draft_rbs.rb
+#                machine-readable form used by `gem-types draft`
+#   OBSERVE_DIR  instead of OBSERVE_OUT: write observe-<pid>.types(.json)
+#                there, so a test run with many processes keeps them all
 #   OBSERVE_PRIVATE=1 to include private/protected methods
 #
 # Output, per method (sorted): a summary line, then (when there is more than
@@ -20,6 +23,8 @@
 # leave it out on purpose.
 # Remember: tests also call methods with invalid input on purpose; check
 # where an odd type came from before putting it in the RBS.
+# RUBYOPT also reaches the `bundle` command itself; only hook real programs.
+return if %w[bundle bundler].include?(File.basename($PROGRAM_NAME))
 require "set"
 module ObserveTypes
   NAME = Module.instance_method(:name)
@@ -32,6 +37,10 @@ module ObserveTypes
   class << self
     attr_reader :data, :stack
     def type_of(v)
+      # Subclasses of Array/Hash (e.g. a TokenArray < Array) keep their name.
+      k = CLASS.bind_call(v)
+      return type_of_shallow(v) if (Array === v && k != Array) || (Hash === v && k != Hash)
+
       case v
       when nil then "nil"
       when true, false then "bool"
@@ -141,7 +150,8 @@ at_exit do
     shapes = d[:shapes].sort.map { |sh, outs| "    #{sh} -> #{outs.to_a.sort.join(' | ')}" }
     ([head] + (shapes.size > 1 ? shapes : [])).join("\n")
   end
-  File.write(ENV.fetch("OBSERVE_OUT"), lines.join("\n") + "\n")
+  out = ENV["OBSERVE_OUT"] || File.join(ENV.fetch("OBSERVE_DIR"), "observe-#{Process.pid}.types")
+  File.write(out, lines.join("\n") + "\n")
   # Machine-readable form for draft_rbs.rb: only calls that returned normally.
   require "json"
   json = ObserveTypes.data.to_h do |key, d|
@@ -150,5 +160,5 @@ at_exit do
             "block" => d[:ok][:block].to_a.sort, "returns" => d[:ok][:ret].to_a.sort,
             "raises" => d[:ret].select { |r| r.start_with?("raise ") }.sort }]
   end
-  File.write(ENV.fetch("OBSERVE_OUT") + ".json", JSON.pretty_generate(json))
+  File.write(out + ".json", JSON.pretty_generate(json))
 end
