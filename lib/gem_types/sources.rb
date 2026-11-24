@@ -49,6 +49,8 @@ module GemTypes
       def sh(env, cmd, chdir:, log:, tool: false)
         FileUtils.mkdir_p(File.dirname(log))
         base = tool || !defined?(Bundler) ? ENV.to_h : Bundler.unbundled_env
+        # Tools such as YARD read files in the locale encoding.
+        base = { "LANG" => "C.UTF-8", "LC_ALL" => "C.UTF-8" }.merge(base) unless base["LANG"].to_s.include?("UTF-8")
         full = base.merge(env).compact
         ok = system(full, "bash", "-c", cmd, chdir: chdir, out: log, err: %i[child out], unsetenv_others: true)
         warn "#{name}: command failed (see #{log})" unless ok

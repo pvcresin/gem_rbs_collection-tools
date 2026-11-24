@@ -124,6 +124,13 @@ module GemTypes
         owner = defs.select { |d| d[:file] == file && d[:line] <= line && line <= d[:end_line] }.max_by { |d| d[:line] }
         [owner ? owner[:key] : "#{file.delete_prefix("#{config.repo}/")}:#{line}", m[3], m[4]]
       end
+      # Diagnostics inside classes the RBS does not declare at all are about
+      # code we did not type; drop them.
+      declared = RbsReader.read_files(sig_files(sig), include_private: true).classes.keys
+      hits.select! do |key, kind, _|
+        owner = key.include?(":") && !key.match?(/\A[\w:]+[#.]/) ? nil : GemTypes.split_key(key).first
+        kind == "UndeclaredMethodDefinition" || owner.nil? || declared.include?(owner)
+      end
       undeclared, mismatches = hits.partition { |_, kind, _| kind == "UndeclaredMethodDefinition" }
       puts "Steep: #{lines.size} errors in the gem's code; #{mismatches.size} where code and signatures disagree."
       mismatches.group_by(&:first).sort.each do |key, list|
