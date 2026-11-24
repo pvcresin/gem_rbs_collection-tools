@@ -11,6 +11,10 @@
 #              to PREFIX.errors.tsv (with counts) instead of raised, and
 #              PREFIX.checked.tsv counts every checked call.
 #   -c FILE    also record every method call (for coverage_report.rb)
+#   -h         show this help
+#
+# Libraries listed in a manifest.yaml next to the signatures (the
+# gem_rbs_collection format) are loaded automatically.
 #
 # Without -o, the first type error raises RBS::Test::Tester::TypeError.
 set -euo pipefail
@@ -21,11 +25,17 @@ while [ $# -gt 0 ]; do
     -s) SIGS+=("$2"); shift 2;; -l) LIBS+=("$2"); shift 2;;
     -t) TARGETS=$2; shift 2;; -k) SKIP=$2; shift 2;; -d) DBL=$2; shift 2;;
     -o) OUT=$2; shift 2;; -c) CALLS=$2; shift 2;;
+    -h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0;;
     --) shift; break;; *) echo "unknown option $1" >&2; exit 2;;
   esac
 done
 [ -n "$TARGETS" ] || { echo "-t is required" >&2; exit 2; }
 opt=""; for s in "${SIGS[@]}"; do opt="$opt -I $(cd "$s" && pwd)"; done
+for s in "${SIGS[@]}"; do
+  if [ -f "$s/manifest.yaml" ]; then
+    while read -r l; do LIBS+=("$l"); done < <(ruby -ryaml -e 'puts (YAML.load_file(ARGV[0])["dependencies"] || []).map { _1["name"] }' "$s/manifest.yaml")
+  fi
+done
 for l in "${LIBS[@]}"; do opt="$opt -r $l"; done
 # rbs from the default gem environment, even when GEM_HOME points elsewhere
 RBSLIB=${RBS_LIB:-$(env -u GEM_HOME -u GEM_PATH -u BUNDLE_GEMFILE ruby -e 'print Gem::Specification.find_by_name("rbs").full_gem_path')/lib}

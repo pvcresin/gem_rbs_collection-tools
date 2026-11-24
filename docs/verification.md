@@ -141,6 +141,10 @@ and the suite, and confirm the specific errors are gone.
   them itself and recurses into `SystemStackError`. Methods a gem adds to
   them through an included module are still checked when the module is a
   target (e.g. `-t "MethodSource,MethodSource::*"`).
+- **Overrides are checked only where declared**: if the RBS declares a
+  method only on an included module, a class's own override of it is not
+  hooked. Declare the method on the class too when its implementation
+  differs (coverage still counts the module's declaration as called).
 - **Setters**: the checker validates the method's real return value, not the
   assignment expression's value.
 - `RBS_TEST_DOUBLE_SUITE` (`-d`) only skips rspec/minitest doubles, not
