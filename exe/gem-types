@@ -6,8 +6,10 @@
 #
 #   gem-types pick      <gem_rbs_collection dir> [--top 500] [--limit 30] [--min-months N]
 #   gem-types prepare   <gem> [version] [workdir]
-#   gem-types collect   --workdir W --ns Foo --test-cmd "..." [--sources a,b] [--require foo] [--lib lib] [--tests test,spec]
+#   gem-types collect   --workdir W --ns Foo --test-cmd "..." [--sources a,b] [--jobs N] [--require foo] [--lib lib] [--tests test,spec]
 #   gem-types draft     --workdir W [--existing path/to/foo.rbs]
+#   gem-types exists    --workdir W --sig path/to/foo.rbs
+#   gem-types steep     --workdir W --sig dir_or_file [--library json,uri]
 #   gem-types check     [rbs_check.sh options] -- <command>
 #   gem-types coverage  <file.rbs> <calls file>
 #
@@ -71,6 +73,9 @@ def parse(args)
     o.on("--lib LIST", Array) { opts[:lib] = _1 }
     o.on("--tests LIST", Array) { opts[:tests] = _1 }
     o.on("--existing FILE") { opts[:existing] = _1 }
+    o.on("--jobs N", Integer) { opts[:jobs] = _1 }
+    o.on("--sig PATH") { opts[:sig] = _1 }
+    o.on("--library LIST", Array) { opts[:library] = _1 }
   end.parse!(args)
   opts[:workdir] or abort "--workdir is required"
   opts
@@ -85,12 +90,22 @@ when "coverage" then libexec("coverage_report.rb", ARGV)
 when "collect"
   opts = parse(ARGV)
   cfg = load_config(opts[:workdir], opts)
-  (opts[:sources] || GemTypes::Sources::ALL).each do |src|
-    warn "== #{src}"
+  selected = opts[:sources] || GemTypes::Sources::ALL
+  run_one = lambda do |src|
     t = Time.now
-    GemTypes::Sources.for(src, cfg).run
-    warn "   #{(Time.now - t).round(1)}s"
+    ok = GemTypes::Sources.for(src, cfg).run
+    warn format("  %-10s %-6s %5.1fs", src, ok == false || ok.nil? ? "failed" : "ok", Time.now - t)
   end
+  # Static sources do not touch the test environment: run them in parallel
+  # with the test runs. Test runs share the repo (files, ports), so they run
+  # one at a time unless --jobs says otherwise.
+  static = selected & GemTypes::Sources::STATIC
+  runtime = selected & GemTypes::Sources::RUNTIME
+  threads = static.map { |src| Thread.new { run_one.(src) } }
+  runtime.each_slice([opts[:jobs] || 1, 1].max) do |batch|
+    batch.map { |src| Thread.new { run_one.(src) } }.each(&:join)
+  end
+  threads.each(&:join)
 when "draft"
   opts = parse(ARGV)
   cfg = load_config(opts[:workdir], opts)
@@ -110,6 +125,16 @@ when "draft"
   File.write(File.join(opts[:workdir], "report.md"), merger.report)
   warn "wrote #{File.join(opts[:workdir], 'draft.rbs')} and report.md"
   evidence.each { |src, h| warn "  #{src}: #{h.size} methods" }
+when "exists"
+  opts = parse(ARGV)
+  cfg = load_config(opts[:workdir], opts)
+  sig = opts[:sig] or abort "--sig is required"
+  exit GemTypes::Verify.exists(cfg, sig)
+when "steep"
+  opts = parse(ARGV)
+  cfg = load_config(opts[:workdir], opts)
+  sig = opts[:sig] or abort "--sig is required"
+  exit GemTypes::Verify.steep(cfg, sig, opts[:library] || [])
 else
   usage = File.read(__FILE__).lines.drop_while { !_1.start_with?("#   gem-types") }
               .take_while { _1.start_with?("#") }.map { _1.sub(/^# ?/, "") }.join

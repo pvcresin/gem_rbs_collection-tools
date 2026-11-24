@@ -90,6 +90,22 @@ cd <clone> && GEM_HOME=$W/gemhome GEM_PATH=$W/gemhome BUNDLE_GEMFILE=… \
 4. Compare failures with step 1. New failures are either type errors that
    changed behavior or tool artifacts (section 5).
 
+## 3b. Check declarations against the gem itself
+
+```
+$TOOLS/exe/gem-types exists --workdir W --sig <gem_rbs_collection>/gems/foo/1.2/foo.rbs
+$TOOLS/exe/gem-types steep  --workdir W --sig <same> [--library json,uri]
+```
+
+- `exists` loads the gem and checks every declared method, class/module
+  kind and superclass. It catches declarations of methods that do not exist
+  (runtime checks never call them, and `bin/test` cannot tell).
+- `steep` type-checks the gem's own `lib/` against the signatures and lists
+  the diagnostics where code and signatures disagree, per method, then the
+  methods defined but not declared. Expect noise: a `def m(*args)`
+  implementation with precise overloads in RBS gives
+  `DifferentMethodParameterKind`, which is fine.
+
 ## 4. Triage
 
 | What you see | Usually | Action |

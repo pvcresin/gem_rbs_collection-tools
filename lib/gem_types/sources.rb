@@ -30,7 +30,7 @@ module GemTypes
   # reads whatever raw output exists.
   module Sources
     RUNTIME = %w[tracepoint rbs_trace lumitrace].freeze
-    STATIC = %w[typeprof tyda prototype].freeze
+    STATIC = %w[typeprof tyda yard rigor prototype].freeze
     ALL = (RUNTIME + STATIC).freeze
 
     def self.for(name, config) = const_get(name.split("_").map(&:capitalize).join).new(config)
@@ -42,17 +42,20 @@ module GemTypes
       def name = self.class.name.split("::").last.gsub(/(?<!^)([A-Z])/, '_\1').downcase
       def dir = File.join(config.out, name)
 
-      # Runs a command outside this tool's own bundle.
-      def sh(env, cmd, chdir:, log:)
+      # Runs a command. By default outside this tool's bundle (the gem's own
+      # environment); `tool: true` keeps this tool's bundle (for tools in our
+      # Gemfile). Builds the environment explicitly so sources can run in
+      # threads (Bundler.with_unbundled_env changes the global ENV).
+      def sh(env, cmd, chdir:, log:, tool: false)
         FileUtils.mkdir_p(File.dirname(log))
-        ok = nil
-        clean = defined?(Bundler) ? Bundler.method(:with_unbundled_env) : ->(&b) { b.call }
-        clean.call do
-          ok = system(env, "bash", "-c", cmd, chdir: chdir, out: log, err: %i[child out])
-        end
+        base = tool || !defined?(Bundler) ? ENV.to_h : Bundler.unbundled_env
+        full = base.merge(env).compact
+        ok = system(full, "bash", "-c", cmd, chdir: chdir, out: log, err: %i[child out], unsetenv_others: true)
         warn "#{name}: command failed (see #{log})" unless ok
         ok
       end
+
+      def tool_bin(gem, exe = gem) = "#{RbConfig.ruby.shellescape} #{Gem.bin_path(gem, exe).shellescape}"
 
       # Runs the test command with an extra -r hook.
       def run_tests(hook, env)
@@ -166,11 +169,10 @@ module GemTypes
     class Typeprof < Base
       def run
         FileUtils.mkdir_p(config.out)
-        bin = Gem.bin_path("typeprof", "typeprof")
         files = (config.lib_paths + config.test_paths).map(&:shellescape).join(" ")
-        sh({}, "#{RbConfig.ruby.shellescape} #{bin.shellescape} --no-collection --show-parameter-names " \
+        sh({}, "#{tool_bin('typeprof')} --no-collection --show-parameter-names " \
                "--no-show-errors -o #{File.join(config.out, 'typeprof.rbs').shellescape} #{files}",
-           chdir: config.repo, log: File.join(config.out, "typeprof.log"))
+           chdir: config.repo, log: File.join(config.out, "typeprof.log"), tool: true)
       end
 
       def read = from_rbs(File.join(config.out, "typeprof.rbs"))
@@ -192,13 +194,62 @@ module GemTypes
     class Tyda < Typeprof
       def run
         FileUtils.mkdir_p(config.out)
-        bin = Gem.bin_path("tyda", "tyda")
         files = (config.lib_paths + config.test_paths).map(&:shellescape).join(" ")
-        sh({}, "#{bin.shellescape} #{files} > #{File.join(config.out, 'tyda.rbs').shellescape}",
-           chdir: config.repo, log: File.join(config.out, "tyda.log"))
+        sh({}, "#{tool_bin('tyda')} #{files} > #{File.join(config.out, 'tyda.rbs').shellescape}",
+           chdir: config.repo, log: File.join(config.out, "tyda.log"), tool: true)
       end
 
       def read = from_rbs(File.join(config.out, "tyda.rbs"))
+    end
+
+    # YARD documentation turned into RBS by Sord: the documented contract
+    # (@param/@return), which tests may not exercise. Docs can be stale, so
+    # this is compared, never trusted alone.
+    class Yard < Typeprof
+      def run
+        FileUtils.rm_rf(dir); FileUtils.mkdir_p(dir)
+        files = config.lib_paths.map { |d| File.join(d, "**", "*.rb").shellescape }.join(" ")
+        out = File.join(config.out, "yard.rbs")
+        sh({}, "#{tool_bin('yard')} doc -n -q --no-progress #{files} && " \
+               "#{tool_bin('sord')} gen --rbs --hide-private --replace-errors-with-untyped " \
+               "--no-sord-comments --no-regenerate #{out.shellescape}",
+           chdir: dir, log: File.join(config.out, "yard.log"), tool: true)
+      end
+
+      def read = from_rbs(File.join(config.out, "yard.rbs"))
+    end
+
+    # Rigor (rigortype/rigor): inference-first static analyzer with an RBS
+    # generator (`rigor sig-gen`). Needs Ruby 4.0; set RIGOR_RUBY to that
+    # ruby (and optionally RIGOR_GEM_HOME where rigortype is installed).
+    # Skipped when not available.
+    class Rigor < Typeprof
+      def available?
+        ruby = ENV["RIGOR_RUBY"]
+        ruby && File.executable?(ruby) && File.exist?(rigor_bin)
+      end
+
+      def rigor_bin
+        home = ENV["RIGOR_GEM_HOME"] || File.join(Dir.home, ".gem", "rigor")
+        File.join(home, "bin", "rigor")
+      end
+
+      def run
+        unless available?
+          warn "rigor: skipped (set RIGOR_RUBY to a Ruby 4.0 with rigortype installed; see docs/evidence.md)"
+          return false
+        end
+        FileUtils.mkdir_p(config.out)
+        home = ENV["RIGOR_GEM_HOME"] || File.join(Dir.home, ".gem", "rigor")
+        files = config.lib_paths.flat_map { |d| Dir[File.join(d, "**", "*.rb")] }.map(&:shellescape).join(" ")
+        sh({ "GEM_HOME" => home, "GEM_PATH" => home, "BUNDLE_GEMFILE" => nil, "RUBYOPT" => nil },
+           "#{ENV['RIGOR_RUBY'].shellescape} #{rigor_bin.shellescape} sig-gen --print --params=observed " \
+           "#{config.test_paths.map { |t| "--observe=#{t.shellescape}" }.join(' ')} #{files} " \
+           "> #{File.join(config.out, 'rigor.rbs').shellescape}",
+           chdir: config.repo, log: File.join(config.out, "rigor.log"))
+      end
+
+      def read = from_rbs(File.join(config.out, "rigor.rbs"))
     end
 
     # rbs prototype runtime: the method list and parameter names/kinds of the
@@ -269,7 +320,8 @@ module GemTypes
       end
       tails, implicit_nil = tail_exprs(node.body)
       lasts = tails.map { |t| l = t.location; [file, l.start_line, l.start_column, l.end_line, l.end_column] }
-      @defs << { key: key, file: file, params: params.compact, lasts: lasts, implicit_nil: implicit_nil }
+      @defs << { key: key, file: file, line: node.location.start_line, end_line: node.location.end_line,
+                 params: params.compact, lasts: lasts, implicit_nil: implicit_nil }
     end
 
     # The expressions whose value a method body can return (Lumitrace does

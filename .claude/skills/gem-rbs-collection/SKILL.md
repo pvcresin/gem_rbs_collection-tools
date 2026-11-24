@@ -1,6 +1,6 @@
 ---
 name: gem-rbs-collection
-description: Add or fix RBS type signatures for gems in ruby/gem_rbs_collection and prove they match what the gem really does. Covers picking which gems to type, gathering type evidence with the gem-types CLI (TracePoint, rbs-trace and Lumitrace over the gem's own test suite; TypeProf, tyda and rbs prototype runtime statically), generating a draft RBS and a source-by-source comparison, static checks, runtime type checking of every declared method and of the gem's test suite, triaging type errors, and the fork/commit/PR/merge flow. Use this whenever the user wants to add gems to gem_rbs_collection, choose the next gems to type, update or fix signatures there, verify RBS from that repository, or says things like "gem_rbs_collection に型を追加して", "次に型をつける gem を選んで", "RBS を直して", "この型定義が正しいか確認して", even if the repository is not named.
+description: Add or fix RBS type signatures for gems in ruby/gem_rbs_collection and prove they match what the gem really does. Covers picking which gems to type, gathering type evidence with the gem-types CLI (TracePoint, rbs-trace and Lumitrace over the gem's own test suite; TypeProf, tyda, Rigor, YARD/Sord and rbs prototype runtime statically), checking declarations against the loaded gem and with Steep, generating a draft RBS and a source-by-source comparison, static checks, runtime type checking of every declared method and of the gem's test suite, triaging type errors, and the fork/commit/PR/merge flow. Use this whenever the user wants to add gems to gem_rbs_collection, choose the next gems to type, update or fix signatures there, verify RBS from that repository, or says things like "gem_rbs_collection に型を追加して", "次に型をつける gem を選んで", "RBS を直して", "この型定義が正しいか確認して", even if the repository is not named.
 ---
 
 # gem_rbs_collection: pick, type and verify gems
@@ -68,9 +68,11 @@ For each gem (details: `docs/evidence.md`):
    dependencies plus rbs, rbs-trace and lumitrace. Install it and make the
    test suite pass *without* any tooling first (add test gems if needed).
 2. `gem-types collect --workdir W --ns Foo --test-cmd '<how the repo runs its tests>'`
-   runs six sources: TracePoint, rbs-trace and Lumitrace while the tests
-   run; TypeProf and tyda over lib + tests; `rbs prototype runtime` for the
-   method list and parameter names.
+   runs eight sources: TracePoint, rbs-trace and Lumitrace while the tests
+   run; TypeProf, tyda and Rigor (if Ruby 4.0 is set up, see
+   docs/evidence.md) over lib + tests; YARD docs via Sord (the documented
+   contract); `rbs prototype runtime` for the method list and parameter
+   names. Static sources run in parallel with the test runs.
 3. `gem-types draft --workdir W [--existing <current .rbs>]` writes
    `draft.rbs` (one signature per method from the best source, with a
    comment naming the sources) and `report.md` (every source's signature,
@@ -116,7 +118,11 @@ name parameters properly, and decide unions.
 ## 4. Verify
 
 1. Static: `bin/test gems/<gem>/<version>` and `bundle exec rubocop gems/<gem>`.
-2. Source review: every declaration backed by code (file:line).
+2. Against the gem itself: `gem-types exists --workdir W --sig <rbs>` (every
+   declared method, class kind and superclass exists) and
+   `gem-types steep --workdir W --sig <rbs>` (the gem's own code
+   type-checked against the signatures). Then a source review: every
+   declaration backed by code (file:line).
 3. Runtime, every declared method: a script in scratch calls the API under
    `gem-types check`; `gem-types coverage` lists declared
    methods never called. Repeat until empty.

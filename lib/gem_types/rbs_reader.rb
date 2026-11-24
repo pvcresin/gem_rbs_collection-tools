@@ -9,18 +9,19 @@ module GemTypes
   class RbsReader
     Result = Struct.new(:methods, :classes, keyword_init: true)
 
-    def self.read_files(paths)
+    def self.read_files(paths, include_private: false)
       methods = Hash.new { |h, k| h[k] = [] }
       classes = {}
       paths.each do |path|
-        r = read(File.read(path), path)
+        r = read(File.read(path), path, include_private: include_private)
         r.methods.each { |k, v| methods[k] |= v }
         r.classes.each { |k, v| classes[k] ||= v }
       end
+      methods.default_proc = nil # a lookup must not add keys
       Result.new(methods: methods, classes: classes)
     end
 
-    def self.read(text, name = "(rbs)")
+    def self.read(text, name = "(rbs)", include_private: false)
       methods = Hash.new { |h, k| h[k] = [] }
       classes = {}
       begin
@@ -29,11 +30,12 @@ module GemTypes
         warn "#{name}: #{e.message.lines.first}"
         return Result.new(methods: methods, classes: classes)
       end
-      decls.each { |d| walk(d, "", methods, classes) }
+      decls.each { |d| walk(d, "", methods, classes, include_private) }
+      methods.default_proc = nil
       Result.new(methods: methods, classes: classes)
     end
 
-    def self.walk(decl, ns, methods, classes)
+    def self.walk(decl, ns, methods, classes, include_private = false)
       return unless decl.is_a?(RBS::AST::Declarations::Class) || decl.is_a?(RBS::AST::Declarations::Module)
 
       name = decl.name.to_s.delete_prefix("::")
@@ -47,7 +49,7 @@ module GemTypes
         when RBS::AST::Members::Private then visibility = :private
         when RBS::AST::Members::Public then visibility = :public
         when RBS::AST::Members::MethodDefinition
-          next if (m.visibility || visibility) == :private && m.name != :initialize
+          next if !include_private && (m.visibility || visibility) == :private && m.name != :initialize
           seps = case m.kind
                  when :singleton then ["."]
                  when :singleton_instance then ["#", "."]
@@ -68,7 +70,7 @@ module GemTypes
           sep = m.kind == :singleton ? "." : "#"
           methods["#{full}#{sep}#{m.new_name}"] |= ["(alias of #{m.old_name})"]
         when RBS::AST::Declarations::Base
-          walk(m, full, methods, classes)
+          walk(m, full, methods, classes, include_private)
         end
       end
     end

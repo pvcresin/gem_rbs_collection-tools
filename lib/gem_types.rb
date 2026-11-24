@@ -35,7 +35,7 @@ module GemTypes
   end
 
   # Order used to pick the draft signature: runtime evidence first.
-  PRIORITY = %w[tracepoint rbs_trace lumitrace typeprof tyda prototype existing].freeze
+  PRIORITY = %w[tracepoint rbs_trace lumitrace typeprof rigor tyda yard prototype existing].freeze
 
   module_function
 
@@ -128,3 +128,4 @@ end
 require_relative "gem_types/rbs_reader"
 require_relative "gem_types/sources"
 require_relative "gem_types/merger"
+require_relative "gem_types/verify"

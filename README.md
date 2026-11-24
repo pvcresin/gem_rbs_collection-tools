@@ -27,8 +27,10 @@ source host.
 ```
 exe/gem-types pick     <gem_rbs_collection dir> [--top 500] [--limit 30] [--min-months N]
 exe/gem-types prepare  <gem> [version] [workdir]
-exe/gem-types collect  --workdir W --ns Foo --test-cmd "..." [--sources a,b] [--require foo] [--lib lib] [--tests test,spec]
+exe/gem-types collect  --workdir W --ns Foo --test-cmd "..." [--sources a,b] [--jobs N] [--require foo] [--lib lib] [--tests test,spec]
 exe/gem-types draft    --workdir W [--existing path/to/foo.rbs]
+exe/gem-types exists   --workdir W --sig path/to/foo.rbs
+exe/gem-types steep    --workdir W --sig dir_or_file [--library json,uri]
 exe/gem-types check    [-s sigdir] [-t targets] [-o prefix] [-c calls] [-d rspec|minitest] -- <command>
 exe/gem-types coverage <file.rbs> <calls file>
 ```
@@ -39,6 +41,8 @@ exe/gem-types coverage <file.rbs> <calls file>
 | `prepare` | Unpacks the gem, clones upstream at the release tag, and writes a Gemfile for its tests from the package's dependencies (plus rbs, rbs-trace, lumitrace). |
 | `collect` | Runs the evidence sources (below) and keeps their raw output in `W/evidence/`. |
 | `draft` | Merges the evidence into `W/draft.rbs` and `W/report.md`. |
+| `exists` | Loads the gem and checks that every declared method, class kind and superclass exists. |
+| `steep` | Type-checks the gem's own code against the signatures; lists where they disagree. |
 | `check` | Runs any command under `rbs/test/setup`; `-o` records type errors instead of raising, `-c` records calls. |
 | `coverage` | Lists methods declared in an RBS file that a run never called. |
 
@@ -51,9 +55,12 @@ exe/gem-types coverage <file.rbs> <calls file>
 | `lumitrace` | runtime (test suite) | [Lumitrace](https://github.com/ko1/lumitrace), mapped to parameters and return expressions with Prism |
 | `typeprof` | static (lib + tests) | [TypeProf](https://github.com/ruby/typeprof) |
 | `tyda` | static (lib + tests) | [tyda](https://rubygems.org/gems/tyda) |
+| `rigor` | static (lib, observing tests) | [Rigor](https://github.com/rigortype/rigor) `sig-gen` (needs Ruby 4.0, optional) |
+| `yard` | documented contract | YARD docs via [Sord](https://github.com/AaronC81/sord) |
 | `prototype` | structure | `rbs prototype runtime` |
 
-The report flags methods where sources disagree, where calls only raised
+Static sources run in parallel with the test runs. The report flags methods
+where sources disagree, where calls only raised
 (negative tests, which the RBS should reject), and methods with no runtime
 evidence. See [docs/evidence.md](docs/evidence.md).
 

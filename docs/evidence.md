@@ -11,6 +11,8 @@ agree the type is probably right, and where they disagree is where to look.
 | `lumitrace` | [Lumitrace](https://github.com/ko1/lumitrace) "types" mode while the tests run | Types of every expression; here mapped to parameters and to the method's return expressions (if/case branches included) | No element types (`Array`); explicit `return` inside loops is missed |
 | `typeprof` | TypeProf over `lib` + `test` | Static inference including call sites in the tests; tuples and literal types | Often too precise (tuples) or untyped; slow on big code bases |
 | `tyda` | [tyda](https://rubygems.org/gems/tyda) over `lib` + `test` | Fast static inference, call-site types from the tests, class structure | Many `untyped` |
+| `rigor` | [Rigor](https://github.com/rigortype/rigor) `sig-gen --params=observed` over `lib`, observing `test` | Independent inference engine; parameter types from call sites in the tests | Needs Ruby 4.0; young project (0.4.x); skips methods it cannot type |
+| `yard` | YARD docs turned into RBS by [Sord](https://github.com/AaronC81/sord) | The **documented contract** (`@param`/`@return`), which tests may not exercise | Only as good as the docs; stale docs happen |
 | `prototype` | `rbs prototype runtime` on the loaded gem | The real method list, parameter names and kinds, class/module structure | No types |
 
 ## Workflow
@@ -44,13 +46,18 @@ $T draft --workdir $W [--existing <gem_rbs_collection>/gems/netrc/0.11/netrc.rbs
 - `collect --sources tracepoint,lumitrace` reruns only some sources; settings
   are saved in `$W/gem-types.json`.
 - Options: `--require` (what to require for `prototype`, default from the
-  namespace), `--lib` (default `lib`), `--tests` (default `test,spec`).
+  namespace), `--lib` (default `lib`), `--tests` (default `test,spec`),
+  `--jobs N` (test runs in parallel; default 1 because test suites may share
+  files or ports). Static sources always run in parallel with the test runs.
+- Rigor runs only when `RIGOR_RUBY` points at a Ruby 4.0 and rigortype is
+  installed in `RIGOR_GEM_HOME` (default `~/.gem/rigor`):
+  `GEM_HOME=~/.gem/rigor /path/to/ruby4/bin/gem install rigortype`.
 
 ## Output
 
 `$W/draft.rbs`: one signature per method, taken from the best available
 source (runtime first: tracepoint, rbs_trace, lumitrace, then typeprof,
-tyda, prototype), with a comment saying where it came from:
+rigor, tyda, yard, prototype), with a comment saying where it came from:
 
 ```
   # observed 19 calls (raises Netrc::Error) | from tracepoint | also: rbs_trace, lumitrace, typeprof, tyda, prototype
@@ -82,6 +89,8 @@ Flags in "Needs attention":
   rbs-trace and Lumitrace showed `Netrc::TokenArray`).
 - **static inference differs from runtime**: static tools saw a call or a
   path the tests did not run, or are just imprecise. Read the source.
+- **YARD docs differ from runtime**: the docs promise something the tests
+  do not show (or the docs are stale). Check which is the contract.
 - **no runtime evidence**: the tests never call it. Type it from the source
   and make sure the verification script calls it.
 - **not in existing RBS / in existing RBS but not observed** (with
@@ -104,3 +113,17 @@ The draft is evidence, not the answer:
 - TracePoint hook: `RUBYOPT=-r$TOOLS/lib/gem_types/hooks/observe.rb OBSERVE_NS="Foo,Foo::*" OBSERVE_OUT=/tmp/foo.types <test command>`
 - Lumitrace on a range, with an HTML view: `LUMITRACE_ENABLE=1 LUMITRACE_ROOT=$PWD/lib LUMITRACE_RANGE="lib/foo.rb:10-40" LUMITRACE_HTML=/tmp/foo.html <test command>`
 - `tyda why` / `tyda trace` show where tyda's inferred type came from.
+
+## Choosing tools
+
+Sources were picked for being maintained and for adding a different view;
+a buggy source only adds noise to the comparison.
+
+- Kept: TypeProf, rbs (prototype), Steep, YARD, Sord, Lumitrace, tyda
+  (all released within the last year), Rigor (very active, but young).
+- rbs-trace: last release 2025-09. Kept as a second runtime opinion; ranked
+  below our TracePoint hook, which records call shapes and exceptions.
+- Not used: Tapioca's gem RBI generation. It reflects on the loaded gem like
+  `rbs prototype runtime` and adds few types for untyped gems, and it needs
+  a Sorbet project. Method existence, mixins and superclasses are covered by
+  `prototype` and `gem-types exists`.

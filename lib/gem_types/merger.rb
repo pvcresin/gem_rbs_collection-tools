@@ -83,8 +83,9 @@ module GemTypes
     def flags(key)
       f = []
       runtime = %w[tracepoint rbs_trace lumitrace].map { |s| @evidence.dig(s, key) }.compact
-      static = %w[typeprof tyda].map { |s| @evidence.dig(s, key) }.compact
-      f << "no runtime evidence (tests never called it)" if runtime.empty? && !static.empty?
+      static = %w[typeprof tyda rigor].map { |s| @evidence.dig(s, key) }.compact
+      docs = @evidence.dig("yard", key)
+      f << "no runtime evidence (tests never called it)" if runtime.empty? && (!static.empty? || docs)
       tp = @evidence.dig("tracepoint", key)
       f << "raises in tests: #{tp.raises.join(', ')} (check for negative tests)" if tp && !tp.raises.empty?
       f << "only raising calls observed" if tp && tp.returns.empty? && tp.calls.positive?
@@ -102,6 +103,8 @@ module GemTypes
       if !rt.empty? && !st.empty? && (st - rt).any?
         f << "static inference differs from runtime"
       end
+      dc = docs ? cmp.([docs]) : []
+      f << "YARD docs differ from runtime" if !rt.empty? && !dc.empty? && (dc - rt).any?
       f
     end
 
