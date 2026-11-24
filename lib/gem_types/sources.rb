@@ -220,30 +220,31 @@ module GemTypes
     end
 
     # Rigor (rigortype/rigor): inference-first static analyzer with an RBS
-    # generator (`rigor sig-gen`). Needs Ruby 4.0; set RIGOR_RUBY to that
-    # ruby (and optionally RIGOR_GEM_HOME where rigortype is installed).
-    # Skipped when not available.
+    # generator (`rigor sig-gen`). Needs Ruby 4.0: uses RIGOR_RUBY, or the
+    # newest rbenv-installed Ruby 4.x, with rigortype installed in
+    # RIGOR_GEM_HOME (default ~/.gem/rigor). Skipped when not available.
     class Rigor < Typeprof
-      def available?
-        ruby = ENV["RIGOR_RUBY"]
-        ruby && File.executable?(ruby) && File.exist?(rigor_bin)
+      def ruby
+        return ENV["RIGOR_RUBY"] if ENV["RIGOR_RUBY"]
+
+        root = ENV["RBENV_ROOT"] || (`rbenv root 2>/dev/null`.strip rescue "")
+        root = "/opt/rbenv" if root.empty? && Dir.exist?("/opt/rbenv")
+        Dir[File.join(root, "versions", "4.*", "bin", "ruby")].max_by { |r| Gem::Version.new(r[%r{versions/([^/]+)/}, 1]) rescue Gem::Version.new("0") }
       end
 
-      def rigor_bin
-        home = ENV["RIGOR_GEM_HOME"] || File.join(Dir.home, ".gem", "rigor")
-        File.join(home, "bin", "rigor")
-      end
+      def home = ENV["RIGOR_GEM_HOME"] || File.join(Dir.home, ".gem", "rigor")
+      def rigor_bin = File.join(home, "bin", "rigor")
+      def available? = ruby && File.executable?(ruby) && File.exist?(rigor_bin)
 
       def run
         unless available?
-          warn "rigor: skipped (set RIGOR_RUBY to a Ruby 4.0 with rigortype installed; see docs/evidence.md)"
+          warn "rigor: skipped (no Ruby 4.0 with rigortype; see docs/evidence.md)"
           return false
         end
         FileUtils.mkdir_p(config.out)
-        home = ENV["RIGOR_GEM_HOME"] || File.join(Dir.home, ".gem", "rigor")
         files = config.lib_paths.flat_map { |d| Dir[File.join(d, "**", "*.rb")] }.map(&:shellescape).join(" ")
         sh({ "GEM_HOME" => home, "GEM_PATH" => home, "BUNDLE_GEMFILE" => nil, "RUBYOPT" => nil },
-           "#{ENV['RIGOR_RUBY'].shellescape} #{rigor_bin.shellescape} sig-gen --print --params=observed " \
+           "#{ruby.shellescape} #{rigor_bin.shellescape} sig-gen --print --params=observed " \
            "#{config.test_paths.map { |t| "--observe=#{t.shellescape}" }.join(' ')} #{files} " \
            "> #{File.join(config.out, 'rigor.rbs').shellescape}",
            chdir: config.repo, log: File.join(config.out, "rigor.log"))

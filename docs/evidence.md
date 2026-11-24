@@ -49,9 +49,10 @@ $T draft --workdir $W [--existing <gem_rbs_collection>/gems/netrc/0.11/netrc.rbs
   namespace), `--lib` (default `lib`), `--tests` (default `test,spec`),
   `--jobs N` (test runs in parallel; default 1 because test suites may share
   files or ports). Static sources always run in parallel with the test runs.
-- Rigor runs only when `RIGOR_RUBY` points at a Ruby 4.0 and rigortype is
-  installed in `RIGOR_GEM_HOME` (default `~/.gem/rigor`):
-  `GEM_HOME=~/.gem/rigor /path/to/ruby4/bin/gem install rigortype`.
+- Rigor needs Ruby 4.0. gem-types uses `RIGOR_RUBY`, or else the newest
+  rbenv-installed Ruby 4.x, with rigortype in `RIGOR_GEM_HOME` (default
+  `~/.gem/rigor`); otherwise the source is skipped. Setup:
+  `rbenv install -s 4.0.6 && GEM_HOME=~/.gem/rigor $(rbenv root)/versions/4.0.6/bin/gem install rigortype`.
 
 ## Output
 
