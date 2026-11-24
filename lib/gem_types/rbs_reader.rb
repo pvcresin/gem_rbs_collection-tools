@@ -13,7 +13,7 @@ module GemTypes
       methods = Hash.new { |h, k| h[k] = [] }
       classes = {}
       paths.each do |path|
-        r = read(File.read(path), path, include_private: include_private)
+        r = read(File.read(path, encoding: "UTF-8"), path, include_private: include_private)
         r.methods.each { |k, v| methods[k] |= v }
         r.classes.each { |k, v| classes[k] ||= v }
       end

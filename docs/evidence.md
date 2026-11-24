@@ -39,7 +39,9 @@ $T draft --workdir $W [--existing <gem_rbs_collection>/gems/netrc/0.11/netrc.rbs
   tracing hook (Lumitrace then sees nothing). The tests load the library from
   `repo/lib` via `-Ilib`. If tests need more gems (often listed only in the
   repo's Gemfile), add them to `$W/env/Gemfile`.
-- `--test-cmd` runs in `repo/` with that environment. Every Ruby process it
+- `--test-cmd` runs in `repo/` with that environment
+  (`BUNDLE_DISABLE_EXEC_LOAD=true` is set so `bundle exec rspec` starts a
+  real process the hooks can attach to). Every Ruby process it
   starts is traced and writes its own output, so loops over test files work.
   Use the command the repo uses (`bundle exec rspec`, `bundle exec rake
   test`, or a loop over files).

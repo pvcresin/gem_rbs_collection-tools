@@ -62,8 +62,12 @@ module GemTypes
         raise "#{name}: --test-cmd is required" unless config.test_cmd
 
         rubyopt = ["-r#{hook}", config.env["RUBYOPT"], ENV.fetch("RUBYOPT", nil)].compact.join(" ")
-        sh(config.env.merge(env).merge("RUBYOPT" => rubyopt), config.test_cmd,
-           chdir: config.repo, log: File.join(config.out, "#{name}.log"))
+        # `bundle exec rspec` normally loads rspec inside the bundle process,
+        # where the hooks have skipped themselves; make it exec instead.
+        full = config.env.merge(env).merge("RUBYOPT" => rubyopt, "BUNDLE_DISABLE_EXEC_LOAD" => "true")
+        ok = sh(full, config.test_cmd, chdir: config.repo, log: File.join(config.out, "#{name}.log"))
+        warn "#{name}: no output recorded (did the test command run Ruby?)" if Dir[File.join(dir, "**", "*")].none? { |f| File.file?(f) }
+        ok
       end
 
       def keep(hash) = hash.select { |k, _| config.in_ns?(k) }
@@ -80,7 +84,7 @@ module GemTypes
       def read
         out = {}
         Dir[File.join(dir, "*.json")].each do |f|
-          JSON.parse(File.read(f)).each do |key, d|
+          JSON.parse(File.read(f, encoding: "UTF-8")).each do |key, d|
             e = out[key] ||= Evidence.new(source: name, params: [], block: [], returns: [], raises: [], calls: 0)
             e.calls += d["calls"]
             e.block |= d["block"]
@@ -98,7 +102,7 @@ module GemTypes
 
       # The human-readable per-shape files, for the report.
       def shapes
-        Dir[File.join(dir, "*.types")].flat_map { |f| File.readlines(f, chomp: true) }
+        Dir[File.join(dir, "*.types")].flat_map { |f| File.readlines(f, chomp: true, encoding: "UTF-8") }
       end
     end
 
@@ -132,7 +136,7 @@ module GemTypes
         args = Hash.new { |h, k| h[k] = Hash.new(0) }
         exprs = Hash.new { |h, k| h[k] = Hash.new(0) }
         Dir[File.join(dir, "*.json")].each do |f|
-          (JSON.parse(File.read(f))["events"] || []).each do |ev|
+          (JSON.parse(File.read(f, encoding: "UTF-8"))["events"] || []).each do |ev|
             types = ev["types"] || {}
             if ev["kind"] == "arg"
               types.each { |t, n| args[[ev["file"], ev["start_line"], ev["name"]]][t] += n }

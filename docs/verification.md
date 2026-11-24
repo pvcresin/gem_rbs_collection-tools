@@ -137,6 +137,10 @@ and the suite, and confirm the specific errors are gone.
   load. Make a copy of the RBS without that declaration for the run, put the
   class in `-k` for the main run, and test that method by hand.
 - **`RBS_TEST_SKIP` needs absolute names**: `-k "::Foo::Bar"`.
+- **Do not put `Proc`, `Method` or `UnboundMethod` in `-t`**: rbs/test uses
+  them itself and recurses into `SystemStackError`. Methods a gem adds to
+  them through an included module are still checked when the module is a
+  target (e.g. `-t "MethodSource,MethodSource::*"`).
 - **Setters**: the checker validates the method's real return value, not the
   assignment expression's value.
 - `RBS_TEST_DOUBLE_SUITE` (`-d`) only skips rspec/minitest doubles, not

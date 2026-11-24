@@ -22,7 +22,11 @@ echo "gem: $gem $ver"
 ( cd "$W" && gem fetch "$gem" -v "$ver" >/dev/null && tar -xOf "$gem-$ver.gem" data.tar.gz | tar -xz -C pkg )
 src=$(ruby -Eutf-8 -rjson -rnet/http -e '
   i = JSON.parse(Net::HTTP.get(URI("https://rubygems.org/api/v1/gems/#{ARGV[0]}.json")))
-  u = [i["source_code_uri"], i["homepage_uri"]].compact.find { |x| x =~ %r{github\.com|gitlab\.com} }
+  meta = i["metadata"] || {}
+  u = [i["source_code_uri"], i["homepage_uri"], i["bug_tracker_uri"], i["changelog_uri"],
+       meta["source_code_uri"], meta["homepage_uri"], meta["bug_tracker_uri"], meta["changelog_uri"],
+       i["documentation_uri"], i["wiki_uri"]].compact.find { |x| x =~ %r{github\.com/[^/]+/[^/]+|gitlab\.com/[^/]+/[^/]+} }
+  u &&= u[%r{\Ahttps?://(?:github|gitlab)\.com/[^/]+/[^/#?]+}]
   puts u.to_s.sub(%r{/(tree|blob)/.*}, "").sub(/\.git\z/, "").sub(%r{\Ahttp://}, "https://")' "$gem")
 if [ -d "$W/repo" ]; then
   echo "repo: $W/repo (already there)"
@@ -35,7 +39,7 @@ elif [ -n "$src" ]; then
     echo "repo: $src (no tag for $ver; clone it yourself and pick the commit)" >&2
   fi
 else
-  echo "repo: not found in gem metadata; look up the source by hand" >&2
+  echo "repo: not found in gem metadata; clone the source at the release tag into $W/repo and rerun prepare" >&2
 fi
 if [ -d "$W/repo" ]; then
   mkdir -p "$W/env"

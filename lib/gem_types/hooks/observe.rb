@@ -96,7 +96,6 @@ ObserveTypes::TP = TracePoint.new(:call, :return, :raise, :rescue) do |tp|
       vis_owner = tp.defined_class
       next if vis_owner.private_method_defined?(tp.method_id) || vis_owner.protected_method_defined?(tp.method_id)
     end
-    ObserveTypes::PENDING.delete(Thread.current)
     d = ObserveTypes.data[key]; d[:n] += 1
     b = tp.binding
     shape = []
@@ -130,7 +129,9 @@ ObserveTypes::TP = TracePoint.new(:call, :return, :raise, :rescue) do |tp|
     next unless st.last && st.last[0] == key
     _, shape, call_params, blk = st.pop
     d = ObserveTypes.data[key]
-    # While an exception unwinds the method, return_value is nil.
+    # While an exception unwinds the method, return_value is nil. The
+    # pending exception is cleared only by a :rescue event, so calls made
+    # while it propagates (rescue matching, ensure) do not hide it.
     e = ObserveTypes::PENDING[Thread.current]
     outcome = e && tp.return_value.nil? ? "raise #{e.class}" : ObserveTypes.type_of(tp.return_value)
     d[:ret] << outcome
