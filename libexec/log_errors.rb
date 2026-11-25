@@ -30,7 +30,15 @@ module RBSLogNoRaise
   end
 end
 RBS::Test::Tester::MethodCallTester.prepend(RBSLogNoRaise)
+# Every Ruby process of the run appends (rbs_check.sh clears the files first),
+# so a test command that starts one process per test file is counted whole.
 at_exit do
-  File.write(ENV.fetch("RBS_ERR_OUT") + ".checked.tsv", $__rbs_checked.sort.map { |k, v| "#{v}\t#{k}" }.join("\n"))
-  File.write(ENV.fetch("RBS_ERR_OUT") + ".errors.tsv", $__rbs_errs.sort_by { |k, v| -v[0] }.map { |k, (n, loc)| "#{n}x\t#{k}\t@ #{loc}" }.join("\n"))
+  out = ENV.fetch("RBS_ERR_OUT")
+  append = lambda do |path, lines|
+    next if lines.empty?
+
+    File.open(path, "a") { |f| f.flock(File::LOCK_EX); f.puts(lines) }
+  end
+  append.(out + ".checked.tsv", $__rbs_checked.sort.map { |k, v| "#{v}\t#{k}" })
+  append.(out + ".errors.tsv", $__rbs_errs.sort_by { |k, v| -v[0] }.map { |k, (n, loc)| "#{n}x\t#{k}\t@ #{loc}" })
 end

@@ -27,11 +27,13 @@ source host.
 ```
 exe/gem-types pick     <gem_rbs_collection dir> [--top 500] [--limit 30] [--min-months N]
 exe/gem-types prepare  <gem> [version] [workdir]
+exe/gem-types run      <gem> [gem...] [--base DIR] [--jobs N]
 exe/gem-types collect  --workdir W --ns Foo --test-cmd "..." [--sources a,b] [--jobs N] [--require foo] [--lib lib] [--tests test,spec]
 exe/gem-types draft    --workdir W [--existing path/to/foo.rbs]
 exe/gem-types exists   --workdir W --sig path/to/foo.rbs
 exe/gem-types steep    --workdir W --sig dir_or_file [--library json,uri]
 exe/gem-types verify   --workdir W --sig path/to/foo.rbs
+exe/gem-types update   --workdir W --sig gems/foo/1.2 [--from 1.2.0]
 exe/gem-types check    [-s sigdir] [-t targets] [-o prefix] [-c calls] [-d rspec|minitest] -- <command>
 exe/gem-types coverage <file.rbs> <calls file>
 ```
@@ -40,11 +42,13 @@ exe/gem-types coverage <file.rbs> <calls file>
 |---|---|
 | `pick` | Ranks gems to type next: top N by downloads, not yet in the collection (or without reviewers), oldest latest release. Skips gems that already have types (any `.rbs` in the package, or bundled with rbs) and gems with an open PR. |
 | `prepare` | Unpacks the gem, clones upstream at the release tag, writes a Gemfile for its tests (package dependencies + the repo's Gemfile + rbs, rbs-trace, lumitrace) and guesses the test command. |
+| `run` | `prepare` → bundle install → plain test run → namespace detection → `collect` → `draft` for several gems in parallel; skips a gem that fails a step, with the reason, and writes `run-summary.md`. |
 | `collect` | Runs the evidence sources (below) and keeps their raw output in `W/evidence/`. |
-| `draft` | Merges the evidence into `W/draft.rbs` and `W/report.md`. |
+| `draft` | Merges the evidence into `W/draft.rbs` and `W/report.md`: `self` returns, generic block pass-through, block argument types, DSL `[self: instance]`, attrs/Struct members; private and `@api private` methods left out. |
 | `exists` | Loads the gem and checks that every declared method, class kind and superclass exists. |
 | `steep` | Type-checks the gem's own code against the signatures; lists where they disagree. |
-| `verify` | `exists` + `steep` + the gem's test suite with and without runtime type checking; prints a Verification section for the PR. |
+| `verify` | `exists` + `steep` + the gem's test suite with and without runtime type checking, declared methods the suite never called, declared types wider than anything the suite saw; prints a Verification section for the PR. |
+| `update` | For an existing RBS and a new gem version: source changes since `--from`, declared methods that are gone, public methods not declared (with suggestions), Steep, test-suite type errors. |
 | `check` | Runs any command under `rbs/test/setup`; `-o` records type errors instead of raising, `-c` records calls. |
 | `coverage` | Lists methods declared in an RBS file that a run never called. |
 

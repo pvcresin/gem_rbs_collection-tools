@@ -36,7 +36,19 @@ elif [ -n "$src" ]; then
   if [ -n "$tag" ]; then
     git -c advice.detachedHead=false clone -q --depth 1 --branch "$tag" "$src" "$W/repo" && echo "repo: $src @ $tag"
   else
-    echo "repo: $src (no tag for $ver; clone it yourself and pick the commit)" >&2
+    # No tag: take the default branch at the commit that set the version.
+    git clone -q --depth 500 "$src" "$W/repo" 2>/dev/null || true
+    commit=""
+    if [ -d "$W/repo/.git" ]; then
+      commit=$(cd "$W/repo" && git log --format=%H -S"$ver" -- '*version*' '*.gemspec' 2>/dev/null | tail -1)
+    fi
+    if [ -n "$commit" ]; then
+      (cd "$W/repo" && git -c advice.detachedHead=false checkout -q "$commit")
+      echo "repo: $src @ $commit (no tag for $ver; the commit that set the version)"
+    else
+      rm -rf "$W/repo"
+      echo "repo: $src (no tag or version commit for $ver; clone it yourself and pick the commit)" >&2
+    fi
   fi
 else
   echo "repo: not found in gem metadata; clone the source at the release tag into $W/repo and rerun prepare" >&2

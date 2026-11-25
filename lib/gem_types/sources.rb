@@ -80,18 +80,29 @@ module GemTypes
       def run
         FileUtils.rm_rf(dir); FileUtils.mkdir_p(dir)
         run_tests(File.join(HOOKS, "observe.rb"),
-                  "OBSERVE_DIR" => dir, "OBSERVE_NS" => config.ns.flat_map { |n| [n, "#{n}::*"] }.join(","))
+                  "OBSERVE_DIR" => dir, "OBSERVE_LIB" => config.lib_paths.join(":"), "OBSERVE_NS" => config.ns.flat_map { |n| [n, "#{n}::*"] }.join(","))
       end
 
       def read
         out = {}
         Dir[File.join(dir, "*.json")].each do |f|
           JSON.parse(File.read(f, encoding: "UTF-8")).each do |key, d|
-            e = out[key] ||= Evidence.new(source: name, params: [], block: [], returns: [], raises: [], calls: 0)
+            next if key == "__ancestors__"
+
+            e = out[key] ||= Evidence.new(source: name, params: [], block: [], returns: [], raises: [], calls: 0,
+                                          self_returns: [0, 0], block_passthrough: [0, 0], block_args: [],
+                                          block_returns: [], block_self: [], returns_without_block: [])
             e.calls += d["calls"]
             e.block |= d["block"]
             e.returns |= d["returns"]
             e.raises |= d["raises"].map { |r| r.delete_prefix("raise ") }
+            %w[self_returns block_passthrough].each do |f|
+              e[f.to_sym] = e[f.to_sym].zip(d[f] || [0, 0]).map(&:sum)
+            end
+            (d["block_args"] || []).each_with_index { |ts, i| e.block_args[i] = (e.block_args[i] || []) | ts }
+            e.block_returns |= d["block_returns"] || []
+            e.block_self |= d["block_self"] || []
+            e.returns_without_block |= d["returns_without_block"] || []
             d["kinds"].each do |label, (kind, pname)|
               p = e.params.find { |x| x[:name] == pname } || (e.params << { kind: kind, name: pname, types: [] }).last
               p[:types] |= d["params"][label] || []
@@ -100,6 +111,13 @@ module GemTypes
         end
         out.each_value { |e| e.params = nil if e.params.empty? && e.returns.empty? }
         keep(out)
+      end
+
+      # Class name => ancestor names for every value class the hook saw.
+      def ancestors
+        Dir[File.join(dir, "*.json")].each_with_object({}) do |f, h|
+          h.merge!(JSON.parse(File.read(f, encoding: "UTF-8"))["__ancestors__"] || {})
+        end
       end
 
       # The human-readable per-shape files, for the report.
@@ -282,10 +300,19 @@ module GemTypes
   class DefIndex
     include Enumerable
 
+    # attrs: { key => { kind: "reader"|"writer"|"accessor", file:, line: } }
+    #   from attr_* calls, Struct.new and Data.define members.
+    # hidden: { key => reason } for private/protected methods and methods
+    #   documented as internal (@api private, @private, :nodoc:).
+    attr_reader :attrs, :hidden
+
     def initialize(dirs)
       @defs = []
+      @attrs = {}
+      @hidden = {}
       dirs.flat_map { |d| Dir[File.join(d, "**/*.rb")] }.each do |file|
         result = Prism.parse_file(file)
+        @comments = result.comments.to_h { |c| [c.location.start_line, c.location.slice] }
         visit(result.value, [], false, file)
       end
     end
@@ -294,16 +321,25 @@ module GemTypes
 
     private
 
+    VISIBILITY = %i[private protected public].freeze
+    ATTRS = { attr_reader: "reader", attr_writer: "writer", attr_accessor: "accessor", attr: "reader" }.freeze
+
     def visit(node, ns, singleton, file)
       case node
       when Prism::ClassNode, Prism::ModuleNode
         name = node.constant_path.slice
         inner = name.start_with?("::") ? [name.delete_prefix("::")] : ns + [name]
-        node.body && visit(node.body, inner, false, file)
+        @internal_ns ||= {}
+        @internal_ns[inner.join("::")] = true if internal_doc?(doc_above(node.location.start_line))
+        struct_members(node.superclass, inner, file) if node.is_a?(Prism::ClassNode)
+        node.body && visit_body(node.body, inner, false, file)
         return
       when Prism::SingletonClassNode
-        node.body && visit(node.body, ns, node.expression.is_a?(Prism::SelfNode), file)
+        node.body && visit_body(node.body, ns, node.expression.is_a?(Prism::SelfNode), file)
         return
+      when Prism::ConstantWriteNode, Prism::ConstantPathWriteNode
+        name = node.is_a?(Prism::ConstantWriteNode) ? node.name.to_s : node.target.slice
+        return if struct_members(node.value, ns + [name], file)
       when Prism::DefNode
         add_def(node, ns, singleton || node.receiver.is_a?(Prism::SelfNode), file)
         return
@@ -311,10 +347,120 @@ module GemTypes
       node.compact_child_nodes.each { |c| visit(c, ns, singleton, file) }
     end
 
+    # A class body in order, tracking `private` / `module_function` sections.
+    def visit_body(body, ns, singleton, file)
+      stmts = body.is_a?(Prism::StatementsNode) ? body.body : [body]
+      stmts = body.statements&.body || [] if body.is_a?(Prism::BeginNode)
+      section = :public
+      module_function = false
+      stmts.each do |st|
+        if st.is_a?(Prism::CallNode) && st.receiver.nil?
+          args = st.arguments&.arguments || []
+          if VISIBILITY.include?(st.name)
+            if args.empty?
+              section = st.name
+            else
+              args.each do |a|
+                if a.is_a?(Prism::DefNode)
+                  add_def(a, ns, singleton || a.receiver.is_a?(Prism::SelfNode), file)
+                  hide(ns, singleton, a.name, st.name)
+                elsif a.respond_to?(:unescaped)
+                  hide(ns, singleton, a.unescaped, st.name)
+                end
+              end
+            end
+            next
+          elsif st.name == :private_class_method
+            args.each { |a| hide(ns, true, a.is_a?(Prism::DefNode) ? a.name : a.unescaped, :private) if a.is_a?(Prism::DefNode) || a.respond_to?(:unescaped) }
+            args.grep(Prism::DefNode).each { |a| add_def(a, ns, true, file) }
+            next
+          elsif st.name == :module_function
+            if args.empty?
+              module_function = true
+            else
+              args.each { |a| hide(ns, false, a.unescaped, :private) if a.respond_to?(:unescaped) }
+            end
+            next
+          elsif ATTRS.key?(st.name)
+            args.each do |a|
+              next unless a.respond_to?(:unescaped)
+
+              add_attr(ns, singleton, a.unescaped, ATTRS[st.name], file, st.location.start_line)
+              hide(ns, singleton, a.unescaped, section) unless section == :public
+            end
+            next
+          end
+        end
+        if st.is_a?(Prism::DefNode)
+          sing = singleton || st.receiver.is_a?(Prism::SelfNode)
+          add_def(st, ns, sing, file)
+          if module_function && !sing
+            add_def(st, ns, true, file)
+            hide(ns, false, st.name, :private)
+          elsif section != :public && !st.receiver
+            hide(ns, singleton, st.name, section)
+          end
+        else
+          visit(st, ns, singleton, file)
+        end
+      end
+    end
+
+    def struct_members(node, ns, file)
+      return unless node.is_a?(Prism::CallNode) && node.receiver
+      kind = { %w[Struct new] => "accessor", %w[Data define] => "reader" }[[node.receiver.slice.delete_prefix("::"), node.name.to_s]]
+      return unless kind
+
+      (node.arguments&.arguments || []).each do |a|
+        add_attr(ns, false, a.unescaped, kind, file, node.location.start_line) if a.is_a?(Prism::SymbolNode)
+      end
+      node.block&.body && visit_body(node.block.body, ns, false, file)
+      true
+    end
+
+    def add_attr(ns, singleton, name, kind, file, line)
+      return if ns.empty?
+
+      base = "#{ns.join('::')}#{singleton ? '.' : '#'}#{name}"
+      @attrs[base] = { kind: kind, file: file, line: line }
+      if internal_ns?(ns)
+        @hidden[base] ||= "documented as internal"
+        @hidden["#{base}="] ||= "documented as internal" unless kind == "reader"
+      end
+    end
+
+    def hide(ns, singleton, name, reason)
+      return if ns.empty? || reason == :public || name.to_s == "initialize"
+
+      key = "#{ns.join('::')}#{singleton ? '.' : '#'}#{name}"
+      @hidden[key] = reason.to_s
+      @hidden["#{key}="] = reason.to_s if @attrs[key] && @attrs[key][:kind] != "reader"
+    end
+
+    def internal_doc?(doc) = doc.match?(/@api\s+private|@private\b|:nodoc:/)
+
+    def internal_ns?(ns)
+      return false unless @internal_ns
+
+      ns.each_index.any? { |i| @internal_ns[ns[0..i].join("::")] }
+    end
+
+    # The comment block right above a line.
+    def doc_above(line)
+      out = []
+      l = line - 1
+      while (c = @comments[l])
+        out.unshift(c)
+        l -= 1
+      end
+      out.join("\n")
+    end
+
     def add_def(node, ns, singleton, file)
       return if ns.empty?
 
       key = "#{ns.join('::')}#{singleton ? '.' : '#'}#{node.name}"
+      @hidden[key] ||= "documented as internal" if internal_doc?(doc_above(node.location.start_line)) || internal_ns?(ns)
       params = []
       if (p = node.parameters)
         p.requireds.each { |x| params << param(x, "req") }

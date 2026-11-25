@@ -30,5 +30,6 @@ at_exit do
     sanc = (m.singleton_class.ancestors rescue []).map { |a| a.singleton_class? ? ((a.attached_object rescue nil).then { |o| Module === o ? NAME.bind_call(o) : nil }) : NAME.bind_call(a) }.compact rescue []
     lines << ["ANC", n, (anc | sanc).join(",")].join("\t")
   end
-  File.write(ENV.fetch("TRACE_OUT"), lines.join("\n"))
+  # Appended by every process of the run; rbs_check.sh clears it first.
+  File.open(ENV.fetch("TRACE_OUT"), "a") { |f| f.flock(File::LOCK_EX); f.puts(lines) } unless lines.empty?
 end

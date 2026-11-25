@@ -43,7 +43,7 @@ export RBS_TEST_TARGET="$TARGETS" RBS_TEST_OPT="$opt" RBS_TEST_LOGLEVEL=error
 [ -n "$SKIP" ] && export RBS_TEST_SKIP="$SKIP"
 [ -n "$DBL" ] && export RBS_TEST_DOUBLE_SUITE="$DBL"
 ro="-I$RBSLIB -rrbs/test/setup"
-if [ -n "$OUT" ]; then export RBS_ERR_OUT="$(realpath -m "$OUT")"; ro="$ro -r$HERE/log_errors.rb"; fi
-if [ -n "$CALLS" ]; then export TRACE_OUT="$(realpath -m "$CALLS")"; ro="$ro -r$HERE/trace_calls.rb"; fi
+if [ -n "$OUT" ]; then export RBS_ERR_OUT="$(realpath -m "$OUT")"; rm -f "$RBS_ERR_OUT.checked.tsv" "$RBS_ERR_OUT.errors.tsv"; ro="$ro -r$HERE/log_errors.rb"; fi
+if [ -n "$CALLS" ]; then export TRACE_OUT="$(realpath -m "$CALLS")"; rm -f "$TRACE_OUT"; ro="$ro -r$HERE/trace_calls.rb"; fi
 export RUBYOPT="$ro ${RUBYOPT:-}"
 exec "$@"

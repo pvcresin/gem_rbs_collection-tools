@@ -18,17 +18,33 @@ lines = ['source "https://rubygems.org"', "",
          "# #{spec.name} #{spec.version}: dependencies from the gem package; the gem itself loads from repo/lib"]
 names = []
 spec.dependencies.each do |d|
+  next if d.name == "bundler" # the running Bundler is used; old bounds only conflict
   reqs = d.requirement.requirements.map { |op, v| "#{op} #{v}" }.reject { _1 == ">= 0" }
   lines << ["gem #{d.name.dump}", *reqs.map(&:dump)].join(", ") + (d.type == :development ? " # development" : "")
   names << d.name
 end
 
-SKIP = /\A(rubocop.*|standard|guard.*|pry.*|byebug|debug|coveralls.*|codeclimate.*|ruby-prof|yard|rdoc|bundler|bake.*|covered|sus-fixtures-.*|rake-compiler|gem-release|overcommit|reek|flay|flog|panolint)\z/
+SKIP = /\A(rubocop.*|standard|guard.*|pry.*|byebug|debug|coveralls.*|codeclimate.*|ruby-prof|yard|rdoc|bundler|bake.*|covered|sus-fixtures-.*|rake-compiler|gem-release|overcommit|reek|flay|flog|panolint|mutant.*|simplecov.*|rubysl.*)\z/
 gemfile = %w[Gemfile gems.rb].map { File.join(repo, _1) }.find { File.file?(_1) }
 if gemfile
   extra = []
+  # Blocks for other platforms (platforms :jruby, :rbx do ... end) are skipped.
+  mri = ->(list) { list.empty? || list.any? { |x| x.match?(/\A(ruby|mri|cruby)/) } }
+  skip_until = nil
   File.foreach(gemfile) do |l|
+    indent = l[/\A\s*/].size
+    if skip_until
+      skip_until = nil if l.match?(/^\s*end\b/) && indent <= skip_until
+      next
+    end
+    if (pm = l.match(/^\s*platforms?\s*\(?\s*(.+?)\)?\s+do\b/))
+      skip_until = indent unless mri.(pm[1].scan(/:(\w+)/).flatten)
+      next
+    end
     m = l.match(/^\s*gem\s+["']([^"']+)["']\s*(.*)$/) or next
+    if (pm = m[2].match(/platforms?:\s*(\[[^\]]*\]|:\w+)/))
+      next unless mri.(pm[1].scan(/:(\w+)/).flatten)
+    end
     name = m[1]
     next if name == spec.name || names.include?(name) || name.match?(SKIP)
 

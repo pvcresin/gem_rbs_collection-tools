@@ -58,6 +58,20 @@ $T draft --workdir $W [--existing <gem_rbs_collection>/gems/netrc/0.11/netrc.rbs
   `~/.gem/rigor`); otherwise the source is skipped. Setup:
   `rbenv install -s 4.0.6 && GEM_HOME=~/.gem/rigor $(rbenv root)/versions/4.0.6/bin/gem install rigortype`.
 
+## Many gems at once
+
+```
+$T run rainbow colorize netrc --base $SCRATCH/rbs-work --jobs 3
+```
+
+For each gem: `prepare`, `bundle install`, one plain test run (skipped if
+the tests do not run or most fail), the namespace (top-level constants that
+requiring the gem defines from its own `lib`), `collect` and `draft`. Logs
+are in `<base>/<gem>/run/`, the table in `<base>/run-summary.md`.
+`prepare` falls back to the commit that set the version when the repo has
+no release tag, and skips Gemfile entries for other platforms (`platforms
+:jruby do`) and the gem's old `bundler` bound.
+
 ## Output
 
 `$W/draft.rbs`: one signature per method, taken from the best available
@@ -100,6 +114,28 @@ Flags in "Needs attention":
   and make sure the verification script calls it.
 - **not in existing RBS / in existing RBS but not observed** (with
   `--existing`): gaps in either direction.
+
+What the TracePoint hook adds to the draft:
+
+| Observation | Draft |
+|---|---|
+| every call returned the receiver | `-> self` |
+| every call with a block returned the block's value | `[T] (...) { (...) -> T } -> T`, plus `(...) -> R` when the block is optional |
+| arguments the block was called with | `{ (String, Integer) -> void }` |
+| the block ran with the receiver as `self` (`instance_eval`) | `{ () [self: instance] -> void }` |
+| block always returned true/false | `{ (...) -> bool }` |
+
+The block is the caller's: blocks from files outside the library, while a
+traced method that was given a block is on the stack (a block passed on
+with `&block` counts for every such frame).
+
+From the library source (Prism): `attr_*`, `Struct.new` and `Data.define`
+members become `attr_reader/writer/accessor`; `initialize` returns `void`;
+private, protected, `module_function` instance copies and methods (or
+classes) documented `@api private`, `@private` or `:nodoc:` are left out
+and listed under "Left out of the draft". Test doubles (`RSpec::Mocks::*`,
+`Minitest::Mock`, ...) are dropped from observed unions. `draft` warns if
+the result does not parse.
 
 ## Turning the draft into signatures
 

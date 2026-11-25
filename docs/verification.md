@@ -90,6 +90,21 @@ cd <clone> && GEM_HOME=$W/gemhome GEM_PATH=$W/gemhome BUNDLE_GEMFILE=… \
 4. Compare failures with step 1. New failures are either type errors that
    changed behavior or tool artifacts (section 5).
 
+`gem-types verify` also prints:
+
+- **declared methods the test suite never called** (from `-c` during the
+  checked run): these need a call in your verification script.
+- **possibly too wide**: per parameter and return type, union members
+  never matched by a value the suite passed or got back, and `untyped`
+  where only concrete types were seen (uses tracepoint evidence from
+  `collect` and the ancestors of observed classes, so `Numeric` matches an
+  `Integer`). Tests rarely cover every accepted type; check each line
+  against the source and keep what the code really accepts.
+
+Runs where the test command starts one Ruby process per test file are
+counted whole: every process appends to the result files, which
+`rbs_check.sh` clears first.
+
 ## 3b. Check declarations against the gem itself
 
 ```

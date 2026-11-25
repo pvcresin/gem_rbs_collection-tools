@@ -86,6 +86,22 @@ For each gem (details: `docs/evidence.md`):
    evidence, gaps against the existing RBS).
 4. Work through the flags in the report before writing anything.
 
+For several gems, `gem-types run <gem> <gem>... --base <dir> --jobs N` does
+steps 1-3 for each gem in parallel (prepare, bundle install, a plain test
+run as a sanity check, namespace detection, collect, draft), skips gems
+that fail a step with the reason, and writes `<dir>/run-summary.md`. Fix a
+skipped gem by hand (usually its `env/Gemfile` or `test_cmd`), then run the
+single-gem commands.
+
+What the draft already does for you (still check each one): `-> self` when
+every call returned the receiver; `[T] ... { ... -> T } -> T` when the
+method returned what the block returned (with a separate no-block overload
+for optional blocks); block parameter types; `[self: instance]` for DSL
+blocks evaluated on the receiver; `attr_reader/writer/accessor` for attrs,
+Struct and Data members; `-> void` for `initialize`; private, protected and
+`@api private` / `@private` / `:nodoc:` methods left out (listed in the
+report); test doubles dropped from unions.
+
 The draft is evidence, not the answer. Read the source for every method,
 name parameters properly, and decide unions.
 
@@ -124,8 +140,11 @@ name parameters properly, and decide unions.
 
 `gem-types verify --workdir W --sig gems/<gem>/<ver>/<gem>.rbs` runs the
 existence check, Steep, and the gem's test suite with and without runtime
-type checking, and prints a Verification section for the PR with the
-numbers. The steps it covers, plus the ones it does not:
+type checking, then lists declared methods the suite never called and
+declared types the suite never exercised ("possibly too wide": union
+members or `untyped` where only narrower values were seen; needs
+tracepoint evidence from `collect`), and prints a Verification section for
+the PR with the numbers. The steps it covers, plus the ones it does not:
 
 1. Static: `bin/test gems/<gem>/<version>` and `bundle exec rubocop gems/<gem>`.
 2. Against the gem itself: `gem-types exists --workdir W --sig <rbs>` (every
@@ -139,6 +158,17 @@ numbers. The steps it covers, plus the ones it does not:
 4. Runtime, the gem's test suite under `gem-types check -o` (log mode) with
    `-d rspec|minitest`. Triage every distinct error with the table in
    `docs/verification.md`; fix real ones and rerun until gone.
+
+## Updating an existing gem to a new version
+
+Prepare a workdir for the new version (`gem-types prepare <gem> <new>`,
+install, `collect`), then
+`gem-types update --workdir W --sig gems/<gem>/<old> --from <old version>`
+lists public methods added, removed or with changed parameters in the
+source since the old version, declared methods that are gone, public
+methods missing from the RBS (with a suggested signature from the
+evidence), Steep mismatches and type errors from the test suite. Copy the
+directory to `gems/<gem>/<new major.minor>` and work through the list.
 
 ## 5. Many gems at once
 

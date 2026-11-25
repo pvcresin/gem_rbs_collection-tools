@@ -17,20 +17,42 @@ module GemTypes
   #   returns: types seen on normal return
   #   raises:  exception classes seen
   #   calls:   number of calls observed (runtime sources)
-  Evidence = Struct.new(:source, :sigs, :params, :block, :returns, :raises, :calls, keyword_init: true) do
+  #   self_returns / block_passthrough: [matching calls, calls] (tracepoint)
+  #   block_args: [[types of 1st arg], ...]; block_returns; block_self ("receiver"/"caller")
+  Evidence = Struct.new(:source, :sigs, :params, :block, :returns, :raises, :calls,
+                        :self_returns, :block_passthrough, :block_args, :block_returns, :block_self, :returns_without_block,
+                        keyword_init: true) do
     def runtime? = !calls.nil?
+
+    def always?(pair) = pair && pair[1].to_i.positive? && pair[0] == pair[1]
 
     def to_rbs
       return sigs.join(" | ") if sigs && !sigs.empty?
       return nil unless params || returns
 
       ps = (params || []).map { |p| GemTypes.param_rbs(p) }.compact.join(", ")
+      passthrough = always?(block_passthrough)
+      blk_ret = if passthrough then "T"
+                elsif (block_returns || []).any? && block_returns.all? { |t| t == "bool" } then "bool"
+                else "void"
+                end
+      blk_params = block_args && !block_args.empty? ? block_args.map { |ts| GemTypes.union(ts) }.join(", ") : "?"
+      blk_self = block_self == ["receiver"] ? " [self: instance]" : ""
+      fn = "{ (#{blk_params})#{blk_self} -> #{blk_ret} }"
       blk = case (block || []).sort
-            when ["yes"] then " { (?) -> untyped }"
-            when %w[no yes] then " ?{ (?) -> untyped }"
+            when ["yes"] then " #{fn}"
+            when %w[no yes] then " ?#{fn}"
             else ""
             end
-      "(#{ps})#{blk} -> #{GemTypes.union(returns || [])}"
+      if passthrough && !blk.empty?
+        with_block = "[T] (#{ps}) #{fn} -> T"
+        return with_block if block.sort == ["yes"]
+
+        # Optional block: the value without a block is a separate overload.
+        return "(#{ps}) -> #{GemTypes.return_type(returns_without_block || [])} | #{with_block}"
+      end
+      ret = always?(self_returns) ? "self" : GemTypes.return_type(returns || [])
+      "(#{ps})#{blk} -> #{ret}"
     end
   end
 
@@ -39,8 +61,11 @@ module GemTypes
 
   module_function
 
+  # Test doubles seen at runtime are not types the gem works with.
+  TEST_DOUBLE = /\A(RSpec::Mocks::|Minitest::Mock\b|Mocha::Mock\b|FlexMock\b|RR::)/
+
   def union(types)
-    ts = types.map { |t| t == "(none)" ? nil : t }.compact.uniq
+    ts = types.map { |t| t == "(none)" || t.match?(TEST_DOUBLE) ? nil : t }.compact.uniq
     return "untyped" if ts.empty?
     nilable = ts.delete("nil")
     ts = ts.map { |t| t.include?("(anon)") ? "untyped" : t }.uniq
@@ -49,6 +74,20 @@ module GemTypes
     body = ts.empty? ? "nil" : ts.sort.join(" | ")
     return body if body == "nil" || body == "untyped" || !nilable
     ts.size == 1 ? "#{body}?" : "(#{body})?"
+  end
+
+  # A union as a method's return type needs parentheses: in
+  # `def m: () -> A | B` the `|` would start another overload.
+  def return_type(types) = paren(union(types))
+
+  def paren(type)
+    depth = 0
+    top = type.each_char.any? do |c|
+      depth += 1 if "([{".include?(c)
+      depth -= 1 if ")]}".include?(c)
+      c == "|" && depth.zero?
+    end
+    top ? "(#{type})" : type
   end
 
   # Array[untyped]/Hash[untyped, untyped] usually come from empty
@@ -129,3 +168,5 @@ require_relative "gem_types/rbs_reader"
 require_relative "gem_types/sources"
 require_relative "gem_types/merger"
 require_relative "gem_types/verify"
+require_relative "gem_types/batch"
+require_relative "gem_types/update"

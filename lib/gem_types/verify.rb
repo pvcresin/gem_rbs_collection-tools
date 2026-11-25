@@ -36,7 +36,12 @@ module GemTypes
           puts "Everything declared exists."
           return 0
         end
-        problems.each { |p| puts "  #{p}" }
+        # Long runs of the same problem (e.g. methods made by method_missing)
+        # are shortened.
+        problems.group_by { |p| p.sub(/\A\S+/, "") }.each do |reason, list|
+          list.first(10).each { |p| puts "  #{p}" }
+          puts "  ... and #{list.size - 10} more#{reason}" if list.size > 10
+        end
         1
       end
     end
@@ -75,7 +80,8 @@ module GemTypes
              end
         next if ok
 
-        via = sep == "#" && mod.instance_methods.include?(:respond_to_missing?) ? " (may be handled by method_missing)" : ""
+        mm = sep == "." ? mod.singleton_class : mod
+        via = (mm.instance_method(:method_missing).owner != BasicObject rescue false) ? " (method_missing defined: may be handled there)" : ""
         problems << "#{key}: no such method#{via}"
       end
       File.write(ARGV[1], JSON.generate("checked" => checked, "problems" => problems))
@@ -171,15 +177,160 @@ module GemTypes
       src.sh(config.env, config.test_cmd, chdir: config.repo, log: plain_log)
       check = File.join(LIBEXEC, "rbs_check.sh")
       checked_log = File.join(config.out, "suite-checked.log")
+      calls = "#{prefix}.calls"
+      FileUtils.rm_f(calls)
       src.sh(config.env, "#{check.shellescape} -s #{sigdir.shellescape} -t #{targets.shellescape} -d #{double} " \
-                         "-o #{prefix.shellescape} -- #{config.test_cmd}",
+                         "-o #{prefix.shellescape} -c #{calls.shellescape} -- bash -c #{config.test_cmd.shellescape}",
              chdir: config.repo, log: checked_log)
       plain = test_counts(File.read(plain_log, encoding: "UTF-8"))
       checked = test_counts(File.read(checked_log, encoding: "UTF-8"))
       checks = File.exist?("#{prefix}.checked.tsv") ? File.readlines("#{prefix}.checked.tsv").sum { _1.to_i } : 0
-      errors = File.exist?("#{prefix}.errors.tsv") ? File.readlines("#{prefix}.errors.tsv", chomp: true, encoding: "UTF-8").reject(&:empty?) : []
-      { plain: plain, checked: checked, checks: checks, errors: errors,
+      # One line per process and error: merge by message.
+      errors = if File.exist?("#{prefix}.errors.tsv")
+                 File.readlines("#{prefix}.errors.tsv", chomp: true, encoding: "UTF-8").reject(&:empty?)
+                     .group_by { |l| l.split("\t")[1] }
+                     .map { |msg, ls| "#{ls.sum(&:to_i)}x\t#{msg}\t#{ls.first.split("\t")[2]}" }
+                     .sort_by { |l| -l.to_i }
+               else
+                 []
+               end
+      uncalled = File.exist?(calls) ? uncalled(sig, calls) : nil
+      { plain: plain, checked: checked, checks: checks, errors: errors, uncalled: uncalled,
         errors_file: "#{prefix}.errors.tsv", logs: [plain_log, checked_log] }
+    end
+
+    # Declared methods the run never called (coverage_report.rb per file).
+    def uncalled(sig, calls)
+      script = File.join(LIBEXEC, "coverage_report.rb")
+      sig_files(sig).flat_map do |f|
+        out = IO.popen([RbConfig.ruby, script, f, calls], err: File::NULL, &:read)
+        out.lines(chomp: true).reject { |l| l.end_with?("(private)") }
+      end.uniq
+    end
+
+    # Declared types wider than anything the test suite passed or got back:
+    # union members and `untyped` never matched by an observed value, per
+    # parameter and return type. Uses tracepoint evidence (W/evidence).
+    # Returns [[key, slot, message], ...]. Informational: tests rarely cover
+    # every accepted type, but each line is worth a look.
+    def too_wide(config, sig)
+      tp = Sources.for("tracepoint", config)
+      observed = tp.read
+      return nil if observed.empty?
+
+      anc = tp.ancestors
+      rbs = RbsReader.read_files(sig_files(sig))
+      out = []
+      rbs.methods.each do |key, sigs|
+        e = observed[key] or next
+        next if e.calls.to_i.zero? || e.returns.empty? || sigs.any? { |x| x.start_with?("(alias of") }
+
+        owner = GemTypes.split_key(key).first
+        slots = Hash.new { |h, k| h[k] = [] }
+        sigs.each do |str|
+          mt = RBS::Parser.parse_method_type(str) rescue next
+          f = mt.type
+          next unless f.is_a?(RBS::Types::Function)
+
+          pos = f.required_positionals + f.optional_positionals
+          pos.each_with_index { |p, i| slots[[:pos, i]] << p.type }
+          slots[[:rest]] << f.rest_positionals.type if f.rest_positionals
+          (f.required_keywords.to_a + f.optional_keywords.to_a).each { |k, p| slots[[:key, k.to_s]] << p.type }
+          slots[[:ret]] << f.return_type unless mt.type_params.any? { |tp_| f.return_type.to_s == tp_.name.to_s }
+        end
+        seen = observed_slots(e)
+        slots.each do |slot, types|
+          obs = seen[slot] or next
+          next if obs.empty? || obs.any? { |t| t.include?("(anon)") || t == "?" }
+
+          members = types.flat_map { |t| members(t) }.uniq
+          label = slot_label(slot, e)
+          if members.include?(:untyped)
+            out << [key, label, "untyped, but only #{obs.sort.join(' | ')} seen"]
+            next
+          end
+          members.each do |m|
+            next if m.is_a?(Symbol)
+            next if obs.any? { |o| satisfies?(o, m, owner, anc) }
+
+            out << [key, label, "#{m} never seen (seen: #{obs.sort.join(' | ')})"]
+          end
+        end
+      end
+      out
+    end
+
+    def observed_slots(e)
+      h = {}
+      i = 0
+      (e.params || []).each do |p|
+        case p[:kind]
+        when "req", "opt" then h[[:pos, i]] = p[:types]; i += 1
+        when "rest" then h[[:rest]] = p[:types]
+        when "key", "keyreq" then h[[:key, p[:name]]] = p[:types]
+        end
+      end
+      h[[:ret]] = e.always?(e.self_returns) ? [] : e.returns
+      h.transform_values { |ts| ts - ["(none)"] }
+    end
+
+    def slot_label(slot, e)
+      case slot[0]
+      when :ret then "return"
+      when :rest then "*rest"
+      when :key then "#{slot[1]}:"
+      else
+        pos = (e.params || []).select { |p| %w[req opt].include?(p[:kind]) }
+        pos[slot[1]] ? pos[slot[1]][:name] : "arg #{slot[1] + 1}"
+      end
+    end
+
+    # Class names a type accepts; :untyped, or :skip for what we cannot check.
+    def members(type)
+      case type
+      when RBS::Types::Union then type.types.flat_map { |t| members(t) }
+      when RBS::Types::Optional then members(type.type) + ["nil"]
+      when RBS::Types::Bases::Any then [:untyped]
+      when RBS::Types::Bases::Nil then ["nil"]
+      when RBS::Types::Bases::Bool then ["bool"]
+      when RBS::Types::Literal
+        case type.literal
+        when true, false then ["bool"]
+        else [type.literal.class.name]
+        end
+      when RBS::Types::ClassInstance then [type.name.to_s.delete_prefix("::")]
+      when RBS::Types::ClassSingleton then ["singleton(#{type.name.to_s.delete_prefix('::')})"]
+      when RBS::Types::Tuple then ["Array"]
+      when RBS::Types::Record then ["Hash"]
+      else [:skip] # interfaces, aliases, self, type variables, procs, void
+      end
+    end
+
+    # Does an observed type string (from the TracePoint hook) satisfy a
+    # declared class name? Relative names in the RBS are tried against the
+    # owner's namespaces.
+    def satisfies?(obs, member, owner, anc)
+      return obs == "bool" if member == "bool"
+      return obs == "nil" if member == "nil"
+      return %w[Object BasicObject Kernel].include?(member) || obs == member if obs == "nil" || obs == "bool"
+
+      if member.start_with?("singleton(")
+        return obs.start_with?("singleton(") && names(member[10..-2], owner).any? { |n| obs == "singleton(#{n})" } ||
+               obs.start_with?("singleton(") # subclasses: not tracked, accept
+      end
+      head = obs[/\A[\w:]+/] or return true
+      chain = anc[head] || core_ancestors(head) || [head]
+      names(member, owner).any? { |n| chain.include?(n) }
+    end
+
+    def names(member, owner)
+      parts = owner.split("::")
+      (0..parts.size).map { |i| (parts.first(parts.size - i) + [member]).join("::") }
+    end
+
+    def core_ancestors(name)
+      c = Object.const_get(name) rescue nil
+      c.is_a?(Module) ? c.ancestors.map(&:name).compact : nil
     end
 
     # Sums "N examples, M failures" (RSpec) and "N runs, A assertions,
