@@ -21,7 +21,8 @@ module GemTypes
         shown = names.first(8).map { |n| "`#{n}`" }.join(", ")
         out << wrap("- #{owner}: #{shown}#{names.size > 8 ? " and #{names.size - 8} more" : ''}.")
       end
-      hidden = defs.hidden.keys.select { |k| config.in_ns?(k) }.sort
+      # The private instance copies made by module_function are not API left out.
+      hidden = defs.hidden.reject { |_, why| why == "module_function" }.keys.select { |k| config.in_ns?(k) }.sort
       public_missing = (defs.map { |d| d[:key] } | defs.attrs.keys)
                        .reject { |k| rbs.methods.key?(k) || defs.hidden.key?(k) || !config.in_ns?(k) || k.end_with?("#initialize") }
                        .reject { |k| HOOKS.include?(GemTypes.split_key(k).last) }

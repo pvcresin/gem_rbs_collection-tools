@@ -74,6 +74,7 @@ class GemTypesTest < Minitest::Test
       d = GemTypes::DefIndex.new([dir])
       assert_equal({ "M::P#x" => "accessor", "M::K#size" => "accessor" }, d.attrs.transform_values { _1[:kind] })
       assert_equal %w[M::K#internal M::K#p1 M::K#priv M::U#helper].sort, d.hidden.keys.sort
+      assert_equal "module_function", d.hidden["M::U#helper"]
       assert_includes d.map { _1[:key] }, "M::U.helper"
     end
   end
@@ -142,5 +143,23 @@ class GemTypesTest < Minitest::Test
     assert_includes io.string, "def initialize: (String) -> void"
     assert_includes io.string, "def a: (Integer x) { (String) -> void } -> bot"
     assert_includes io.string, "attr_reader b: bot"
+  end
+
+  def test_def_index_qualified_class_name_inside_module
+    Dir.mktmpdir do |dir|
+      File.write(File.join(dir, "a.rb"), <<~RUBY)
+        module IPAddress
+          class IPAddress::IPv6::Mapped
+            def ipv4; end
+          end
+          class Other::Thing
+            def x; end
+          end
+        end
+      RUBY
+      keys = GemTypes::DefIndex.new([dir]).map { _1[:key] }
+      assert_includes keys, "IPAddress::IPv6::Mapped#ipv4"
+      assert_includes keys, "IPAddress::Other::Thing#x"
+    end
   end
 end

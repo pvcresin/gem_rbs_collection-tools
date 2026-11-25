@@ -223,7 +223,9 @@ when "verify"
   exit(exists.zero? && steep.zero? && r[:errors].empty? ? 0 : 1)
 when "live"
   opts = parse(ARGV)
-  cfg = load_config(opts[:workdir], opts)
+  # --test-cmd here is the command to check (often a call-every-method
+  # script), not the gem's test suite: do not save it in gem-types.json.
+  cfg = load_config(opts[:workdir], opts.except(:test_cmd))
   sig = File.expand_path(opts[:sig] || abort("--sig is required"))
   cmd = opts[:test_cmd] || cfg.test_cmd or abort "no test command"
   r = GemTypes::Verify.live(cfg, sig, cmd)

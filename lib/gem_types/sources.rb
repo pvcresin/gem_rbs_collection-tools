@@ -327,8 +327,7 @@ module GemTypes
     def visit(node, ns, singleton, file)
       case node
       when Prism::ClassNode, Prism::ModuleNode
-        name = node.constant_path.slice
-        inner = name.start_with?("::") ? [name.delete_prefix("::")] : ns + [name]
+        inner = nest(ns, node.constant_path.slice)
         @internal_ns ||= {}
         @internal_ns[inner.join("::")] = true if internal_doc?(doc_above(node.location.start_line))
         struct_members(node.superclass, inner, file) if node.is_a?(Prism::ClassNode)
@@ -339,12 +338,24 @@ module GemTypes
         return
       when Prism::ConstantWriteNode, Prism::ConstantPathWriteNode
         name = node.is_a?(Prism::ConstantWriteNode) ? node.name.to_s : node.target.slice
-        return if struct_members(node.value, ns + [name], file)
+        return if struct_members(node.value, nest(ns, name), file)
       when Prism::DefNode
         add_def(node, ns, singleton || node.receiver.is_a?(Prism::SelfNode), file)
         return
       end
       node.compact_child_nodes.each { |c| visit(c, ns, singleton, file) }
+    end
+
+    # The full name of `class Name` written inside `ns`. A qualified name
+    # whose first part is one of the enclosing modules resolves from there
+    # (`module IPAddress; class IPAddress::IPv6::Mapped` is
+    # IPAddress::IPv6::Mapped, not IPAddress::IPAddress::IPv6::Mapped).
+    def nest(ns, name)
+      return [name.delete_prefix("::")] if name.start_with?("::")
+
+      first = name.split("::").first
+      i = ns.rindex(first)
+      i && name.include?("::") ? ns[0...i] + [name] : ns + [name]
     end
 
     # A class body in order, tracking `private` / `module_function` sections.
@@ -378,7 +389,7 @@ module GemTypes
             if args.empty?
               module_function = true
             else
-              args.each { |a| hide(ns, false, a.unescaped, :private) if a.respond_to?(:unescaped) }
+              args.each { |a| hide(ns, false, a.unescaped, :module_function) if a.respond_to?(:unescaped) }
             end
             next
           elsif ATTRS.key?(st.name)
@@ -396,7 +407,7 @@ module GemTypes
           add_def(st, ns, sing, file)
           if module_function && !sing
             add_def(st, ns, true, file)
-            hide(ns, false, st.name, :private)
+            hide(ns, false, st.name, :module_function)
           elsif section != :public && !st.receiver
             hide(ns, singleton, st.name, section)
           end
