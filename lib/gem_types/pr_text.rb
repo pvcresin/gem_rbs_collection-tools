@@ -24,9 +24,10 @@ module GemTypes
       hidden = defs.hidden.keys.select { |k| config.in_ns?(k) }.sort
       public_missing = (defs.map { |d| d[:key] } | defs.attrs.keys)
                        .reject { |k| rbs.methods.key?(k) || defs.hidden.key?(k) || !config.in_ns?(k) || k.end_with?("#initialize") }
+                       .reject { |k| HOOKS.include?(GemTypes.split_key(k).last) }
                        .sort
       out << "" << "Left out:" << ""
-      out << wrap("- Public but not declared (say why: internal, metaprogramming, ...): #{public_missing.map { |k| "`#{k}`" }.join(', ')}.") unless public_missing.empty?
+      out << wrap("- Public but not declared (say why: internal, metaprogramming, ...): #{summarize(public_missing)}.") unless public_missing.empty?
       out << wrap("- Private or documented as internal: #{hidden.size} methods.") unless hidden.empty?
       out << "- (nothing)" if public_missing.empty? && hidden.empty?
       out << "" << "## Verification" << ""
@@ -51,6 +52,26 @@ module GemTypes
         out << "- (run `gem-types verify` for the test suite numbers)"
       end
       out.join("\n") + "\n"
+    end
+
+    # Ruby's callbacks, not API users call.
+    HOOKS = %w[included extended inherited prepended method_added].freeze
+
+    # Lists methods one by one, except classes with more than 3 of them, and
+    # whole namespaces when they still add up to many lines.
+    def summarize(keys)
+      by_owner = keys.group_by { |k| GemTypes.split_key(k).first }
+      items = by_owner.flat_map do |owner, ks|
+        ks.size > 3 ? [[owner, "`#{owner}` (#{ks.size} methods)", ks.size]] : ks.map { |k| [owner, "`#{k}`", 1] }
+      end
+      if items.size > 12
+        items = items.group_by { |owner, _, _| owner.split("::").first(2).join("::") }.map do |ns, list|
+          n = list.sum { _3 }
+          list.size > 2 ? [ns, "`#{ns}::*` (#{n} methods)", n] : list
+        end
+        items = items.flat_map { |x| x.first.is_a?(Array) ? x : [x] }
+      end
+      items.map { _2 }.join(", ")
     end
 
     def read_json(path) = File.exist?(path) ? JSON.parse(File.read(path)) : nil

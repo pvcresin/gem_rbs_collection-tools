@@ -109,7 +109,11 @@ that extends it (`extend Memoist`, `extend XPath::DSL`).
 
 `gem-types live --workdir W --sig <rbs> --test-cmd "<cmd>"` makes those
 gaps visible: it reruns the command with every return and attr type made
-`bot` and lists the declarations that never failed. In the first five gems
+`bot` and lists the declarations that never failed. Classes outside the
+gem's namespace that the RBS reopens (String, Kernel, ...) are added to the
+targets with only the declared methods hooked (`RBS_TEST_ONLY_METHODS`,
+honoured by `rbs_check.sh`), so a gem's core extensions are checked without
+wrapping every core method (which made awesome_print's run hang). In the first five gems
 it found Struct accessors (not hooked), Enumerable methods inherited by a
 Hash subclass, and a method that ends in `exec`.
 

@@ -230,12 +230,20 @@ module GemTypes
         w.write(dirs + decls.map { |d| bottomize(d) })
         File.write(File.join(dir, "sig", "#{i}_#{File.basename(f)}"), io.string)
       end
-      targets = config.ns.flat_map { |n| [n, "#{n}::*"] }.join(",")
+      # Classes outside the gem's namespace that the RBS reopens (String,
+      # Kernel, ...) are targets too, so the methods the gem adds to them
+      # are checked; only the methods the RBS declares for them are hooked
+      # (RBS_TEST_ONLY_METHODS, see libexec/rbs_hook_fix.rb).
+      rbs_all = RbsReader.read_files(sig_files(sig))
+      reopened = rbs_all.classes.keys.reject { |c| config.in_ns?("#{c}#x") }
+      targets = (config.ns.flat_map { |n| [n, "#{n}::*"] } + reopened).join(",")
       prefix = File.join(dir, "run")
       src = Sources::Base.new(config)
       check = File.join(LIBEXEC, "rbs_check.sh")
       double = cmd.include?("rspec") ? "rspec" : "minitest"
-      src.sh(config.env, "#{check.shellescape} -s #{File.join(dir, 'sig').shellescape} -t #{targets.shellescape} " \
+      only = rbs_all.methods.keys.select { |k| reopened.include?(GemTypes.split_key(k).first) }
+      env = only.empty? ? config.env : config.env.merge("RBS_TEST_ONLY_METHODS" => only.join(","))
+      src.sh(env, "#{check.shellescape} -s #{File.join(dir, 'sig').shellescape} -t #{targets.shellescape} " \
                          "-d #{double} -o #{prefix.shellescape} -- bash -c #{cmd.shellescape}",
              chdir: config.repo, log: File.join(dir, "run.log"))
       failed = File.exist?("#{prefix}.errors.tsv") ? File.readlines("#{prefix}.errors.tsv", encoding: "UTF-8").filter_map { |l| l[/\t\[(.+?)\] \w+Error/, 1] }.uniq : []

@@ -230,7 +230,10 @@ the PR with the numbers. The steps it covers, plus the ones it does not:
    --test-cmd "<call-every-method script>"` reruns with every return type
    made `bot` and lists declarations that did not fail (never called,
    inherited, Struct accessors, exec). Each one listed needs an assertion
-   on the real value, or a reason.
+   on the real value, or a reason. Core-class additions (String#red,
+   Kernel#ap) are checked too. To check them with `gem-types check`, add
+   the class to `-t` and set `RBS_TEST_ONLY_METHODS="String#red,Kernel.ap"`
+   so only those methods are hooked.
 
 ## Updating an existing gem to a new version
 
