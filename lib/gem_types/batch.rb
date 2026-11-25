@@ -84,23 +84,7 @@ module GemTypes
 
       r.test_cmd = test_cmd
       r.version = Dir[File.join(w, "*.gem")].map { |f| File.basename(f, ".gem")[/-(\d+\.\d+)[^-]*\z/, 1] }.first
-      log = File.join(logs, "tests.log")
-      sh(env, test_cmd, File.join(w, "repo"), log)
-      text = File.read(log, encoding: "UTF-8")
-      counts = Verify.test_counts(text)
-      if test_cmd.include?("rspec") && (counts[:total].zero? || counts[:failed].positive?) && text.match?(RSPEC2)
-        # RSpec 2 era specs: retry with the compatibility shim and keep it
-        # (saved in gem-types.json, so collect/verify/check use it too).
-        shim = { "RUBYOPT" => "-r#{File.join(LIBEXEC, 'rspec2_compat.rb')}" }
-        log2 = File.join(logs, "tests-rspec2.log")
-        sh(env.merge(shim), test_cmd, File.join(w, "repo"), log2)
-        c2 = Verify.test_counts(File.read(log2, encoding: "UTF-8"))
-        if c2[:total] > counts[:total] || (c2[:total] == counts[:total] && c2[:failed] < counts[:failed])
-          counts = c2
-          env = env.merge(shim)
-          File.write(File.join(w, "gem-types.json"), JSON.pretty_generate(env: env, test_cmd: test_cmd))
-        end
-      end
+      counts, env = run_tests_with_fixes(w, env, test_cmd, logs)
       r.tests = "#{counts[:total]} #{counts[:unit]}, #{counts[:failed]} failing"
       return r unless step.("tests", counts[:total].positive?, "the tests did not run (see run/tests.log)")
       return r unless step.("tests", counts[:failed] * 2 <= counts[:total], "most tests fail without tooling (#{r.tests})")
@@ -127,6 +111,74 @@ module GemTypes
     rescue StandardError => e
       r.reason = "#{e.class}: #{e.message}"
       r
+    end
+
+    # Runs the tests; when the log shows a known environment problem, fixes
+    # it and runs again (up to 4 times), keeping a fix only if more tests
+    # run or fewer fail:
+    #   RSpec 2 era specs         -> libexec/rspec2_compat.rb in RUBYOPT
+    #   uninitialized MiniTest    -> libexec/minitest_compat.rb (minitest 6 dropped it)
+    #   obj.must_equal on minitest 6 -> pin minitest ~> 5.0
+    #   cannot load such file -- x / command not found: x
+    #                             -> add gem x to env/Gemfile and install
+    # Environment fixes are saved in gem-types.json for later commands.
+    def run_tests_with_fixes(w, env, test_cmd, logs)
+      log = File.join(logs, "tests.log")
+      sh(env, test_cmd, File.join(w, "repo"), log)
+      text = File.read(log, encoding: "UTF-8")
+      counts = Verify.test_counts(text)
+      tried = []
+      4.times do |i|
+        break if counts[:total].positive? && counts[:failed].zero?
+
+        fix = next_fix(text, env, test_cmd, tried) or break
+        tried << fix[:name]
+        gemfile = File.join(w, "env", "Gemfile")
+        before = File.read(gemfile)
+        new_env = env.merge(fix[:env] || {})
+        if fix[:gem]
+          kept = before.lines.reject { |l| l.match?(/\A\s*gem\s+["']#{Regexp.escape(fix[:gem])}["']/) }.join
+          req = fix[:req] ? ", #{fix[:req].dump}" : ""
+          File.write(gemfile, kept + "gem #{fix[:gem].dump}#{req} # added by gem-types run: the tests need it\n")
+          unless sh(new_env, "bundle install --quiet", File.join(w, "env"), File.join(logs, "install-#{fix[:gem]}.log"))
+            File.write(gemfile, before)
+            next
+          end
+        end
+        log2 = File.join(logs, "tests-fix#{i + 1}-#{fix[:name].tr('^a-zA-Z0-9_-', '_')}.log")
+        sh(new_env, test_cmd, File.join(w, "repo"), log2)
+        t2 = File.read(log2, encoding: "UTF-8")
+        c2 = Verify.test_counts(t2)
+        if c2[:total] > counts[:total] || (c2[:total] == counts[:total] && c2[:failed] < counts[:failed]) ||
+           (c2[:total] == counts[:total] && t2 != text && fix[:gem])
+          counts, text, env = c2, t2, new_env
+          File.write(File.join(w, "gem-types.json"), JSON.pretty_generate(env: env, test_cmd: test_cmd))
+        elsif fix[:gem]
+          File.write(gemfile, before)
+        end
+      end
+      [counts, env]
+    end
+
+    def next_fix(text, env, test_cmd, tried)
+      cands = []
+      if test_cmd.include?("rspec") && text.match?(RSPEC2)
+        rubyopt = [env["RUBYOPT"], "-r#{File.join(LIBEXEC, 'rspec2_compat.rb')}"].compact.join(" ")
+        cands << { name: "rspec2", env: { "RUBYOPT" => rubyopt } }
+      end
+      if text.match?(/uninitialized constant MiniTest\b/)
+        rubyopt = [env["RUBYOPT"], "-r#{File.join(LIBEXEC, 'minitest_compat.rb')}"].compact.join(" ")
+        cands << { name: "minitest_compat", env: { "RUBYOPT" => rubyopt, "MT_COMPAT" => "1" } }
+      end
+      # minitest 6 removed the expectations on Object (obj.must_equal ...).
+      cands << { name: "minitest5", gem: "minitest", req: "~> 5.0" } if text.match?(/undefined method [`'](must|wont)_\w+'/)
+      text.scan(/cannot load such file -- ([\w\-\/]+)/).flatten.uniq.each do |f|
+        next if f.start_with?(".", "/")
+
+        cands << { name: "gem-#{f.split('/').first}", gem: f.split("/").first }
+      end
+      text.scan(/command not found: ([\w\-]+)/).flatten.uniq.each { |c| cands << { name: "gem-#{c}", gem: c } }
+      cands.find { |c| !tried.include?(c[:name]) }
     end
 
     # bundle install; on failure, drop the repo-Gemfile gems the log names

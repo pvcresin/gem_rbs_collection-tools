@@ -195,6 +195,12 @@ name parameters properly, and decide unions.
   specs pass 36/36 with it.
 - Repos without release tags: `prepare` takes the commit that set the
   version. Gemfile entries for other platforms are skipped.
+- Old minitest suites: `run` resolves `MiniTest` lazily
+  (`libexec/minitest_compat.rb`) and pins `minitest ~> 5.0` when tests call
+  `obj.must_equal` (removed in minitest 6). uber 0.1: 45/45.
+- `cannot load such file -- x` / `command not found: x`: `run` adds gem x
+  to `env/Gemfile`, installs and reruns; it keeps the change only if the
+  run improves.
 - `bundle install` conflicts: `run` comments out the repo-Gemfile gems the
   error names and retries once; otherwise delete the line in `env/Gemfile`.
 
