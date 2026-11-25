@@ -485,7 +485,8 @@ module GemTypes
       tails, implicit_nil = tail_exprs(node.body)
       lasts = tails.map { |t| l = t.location; [file, l.start_line, l.start_column, l.end_line, l.end_column] }
       @defs << { key: key, file: file, line: node.location.start_line, end_line: node.location.end_line,
-                 params: params.compact, lasts: lasts, implicit_nil: implicit_nil }
+                 params: params.compact, lasts: lasts, implicit_nil: implicit_nil,
+                 legacy_consts: legacy_consts(node.body) }
     end
 
     # The expressions whose value a method body can return (Lumitrace does
@@ -517,11 +518,30 @@ module GemTypes
       [[node], false]
     end
 
+    # Constants removed from Ruby that a method body still refers to
+    # (a reference raises NameError on Ruby 3.2 and later).
+    LEGACY = %i[Fixnum Bignum].freeze
+
+    def legacy_consts(node)
+      return [] unless node
+
+      found = []
+      stack = [node]
+      while (n = stack.pop)
+        found << n.name if n.is_a?(Prism::ConstantReadNode) && LEGACY.include?(n.name)
+        stack.concat(n.compact_child_nodes)
+      end
+      found.uniq.map(&:to_s)
+    end
+
     def param(node, kind)
       return nil unless node.respond_to?(:name) && node.name
 
       loc = node.respond_to?(:name_loc) && node.name_loc ? node.name_loc : node.location
-      { kind: kind, name: node.name.to_s, line: loc.start_line }
+      h = { kind: kind, name: node.name.to_s, line: loc.start_line }
+      # `opts = {}`: an options Hash passed positionally.
+      h[:hash_default] = true if node.respond_to?(:value) && node.value.is_a?(Prism::HashNode)
+      h
     end
   end
 end

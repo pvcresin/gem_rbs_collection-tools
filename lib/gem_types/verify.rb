@@ -278,6 +278,35 @@ module GemTypes
       end
     end
 
+    # Mistakes found in reviews that the source shows directly. Returns
+    # [[key, message], ...]:
+    # - the method takes an options Hash positionally (`opts = {}`) but the
+    #   RBS only accepts keywords: `new(hash_variable)` is rejected;
+    # - the method refers to Fixnum/Bignum, so it raises NameError on Ruby
+    #   3.2 and later: declare it only if some path avoids the reference.
+    def lint(config, sig)
+      rbs = RbsReader.read_files(sig_files(sig), include_private: true)
+      out = []
+      DefIndex.new(config.lib_paths).each do |d|
+        sigs = rbs.methods[d[:key]] || (d[:key].end_with?("#initialize") ? rbs.methods[d[:key].sub("#initialize", ".new")] : nil)
+        next unless sigs
+
+        hash_param = d[:params].find { |p| p[:kind] == "opt" && p[:hash_default] }
+        if hash_param && d[:params].none? { |p| %w[req rest keyreq key keyrest].include?(p[:kind]) }
+          types = sigs.reject { |x| x.start_with?("(alias of") }.filter_map { |x| RBS::Parser.parse_method_type(x).type rescue nil }
+          positional = types.any? { |f| f.respond_to?(:required_positionals) && (f.required_positionals + f.optional_positionals).any? || (f.respond_to?(:rest_positionals) && f.rest_positionals) }
+          keywords = types.any? { |f| f.respond_to?(:optional_keywords) && (f.optional_keywords.any? || f.required_keywords.any? || f.rest_keywords) }
+          if keywords && !positional
+            out << [d[:key], "takes `#{hash_param[:name]} = {}` positionally but the RBS only accepts keywords; add `| (Hash[Symbol, untyped] #{hash_param[:name]}) -> ...`"]
+          end
+        end
+        unless d[:legacy_consts].empty?
+          out << [d[:key], "refers to #{d[:legacy_consts].join(', ')} (removed in Ruby 3.2): check whether every call raises NameError"]
+        end
+      end
+      out.uniq
+    end
+
     # Declared types wider than anything the test suite passed or got back:
     # union members and `untyped` never matched by an observed value, per
     # parameter and return type. Uses tracepoint evidence (W/evidence).

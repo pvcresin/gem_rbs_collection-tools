@@ -197,6 +197,10 @@ when "verify"
     puts "  (call these from your verification script)" unless r[:uncalled].empty?
     r[:uncalled].each { |k| puts "  #{k}" }
   end
+  puts "", "== lint (mistakes the source shows directly)"
+  lint = GemTypes::Verify.lint(cfg, sig)
+  puts "  nothing" if lint.empty?
+  lint.each { |key, msg| puts "  #{key}: #{msg}" }
   puts "", "== possibly too wide (declared, never seen in the test suite)"
   wide = GemTypes::Verify.too_wide(cfg, sig)
   if wide.nil?
@@ -210,7 +214,7 @@ when "verify"
   declared = rbs_files.sum { |f| GemTypes::RbsReader.read_files([f]).methods.size }
   File.write(File.join(cfg.out, "verify.json"), JSON.pretty_generate(
     exists: exists.zero?, steep: steep.zero?, plain: p_, checked: c, checks: r[:checks],
-    errors: r[:errors], uncalled: r[:uncalled], too_wide: wide
+    errors: r[:errors], uncalled: r[:uncalled], too_wide: wide, lint: lint
   ))
   puts "", "== Verification section for the PR (edit the last line to explain any remaining type errors)", ""
   puts "## Verification", ""

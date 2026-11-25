@@ -122,6 +122,10 @@ overrides an inherited method's type (e.g. `map` on a Hash subclass whose
 `each` yields values) is not checked at runtime. Check those with
 assertions on what the method yields and returns.
 
+`verify` also lints the RBS against the source for two mistakes reviews
+found: an `opts = {}` method declared with keywords only, and methods that
+refer to `Fixnum`/`Bignum` (NameError on Ruby 3.2+).
+
 Runs where the test command starts one Ruby process per test file are
 counted whole: every process appends to the result files, which
 `rbs_check.sh` clears first.

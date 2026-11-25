@@ -162,4 +162,21 @@ class GemTypesTest < Minitest::Test
       assert_includes keys, "IPAddress::Other::Thing#x"
     end
   end
+
+  def test_def_index_options_hash_and_legacy_constants
+    Dir.mktmpdir do |dir|
+      File.write(File.join(dir, "a.rb"), <<~RUBY)
+        module L
+          class C
+            def initialize(args = {}); end
+            def add(o) = o.is_a?(Fixnum) ? 1 : 2
+          end
+        end
+      RUBY
+      d = GemTypes::DefIndex.new([dir]).to_h { [_1[:key], _1] }
+      assert d["L::C#initialize"][:params].first[:hash_default]
+      assert_equal ["Fixnum"], d["L::C#add"][:legacy_consts]
+      assert_empty d["L::C#initialize"][:legacy_consts]
+    end
+  end
 end

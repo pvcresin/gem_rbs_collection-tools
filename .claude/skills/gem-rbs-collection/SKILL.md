@@ -185,6 +185,16 @@ name parameters properly, and decide unions.
   accessors are not hooked by rbs/test, assert their values.
 - Methods ending in `exec`/`exit` → `bot` only when no path returns.
 - DSL blocks run with `class_eval` in a new class: `[self: Class & Mod...]`.
+- `def initialize(args = {})` takes one options Hash positionally. Declare
+  the keywords and also `| (Hash[Symbol, untyped] args) -> void`, or
+  `new(opts)` with a Hash variable is rejected (websocket's own specs do
+  that). `verify` lints for it.
+- Code that refers to `Fixnum`/`Bignum` raises NameError on Ruby 3.2+.
+  Leave out methods where every call reaches the reference (ipaddress
+  Prefix#+, IPv4#split); keep ones with a working path and say so in a
+  comment. `verify` lints for direct references; follow the callers too.
+- Reader-like `[]` that indexes an Array: out of range gives nil, so
+  `-> T?` (ipaddress IPv4#[]).
 
 ## Test suites that do not run
 
