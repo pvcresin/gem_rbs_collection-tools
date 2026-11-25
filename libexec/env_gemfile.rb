@@ -48,7 +48,9 @@ if gemfile
     name = m[1]
     next if name == spec.name || names.include?(name) || name.match?(SKIP)
 
-    versions = m[2].scan(/["']([~<>=! ]*\d[^"']*)["']/).flatten
+    # Conditional versions (RUBY_VERSION < '1.9' ? '~> 10.5' : '>= 10.5')
+    # cannot be read without evaluating Ruby: take the gem unconstrained.
+    versions = m[2].match?(/RUBY_VERSION|RUBY_ENGINE|\?|\bif\b|\bunless\b/) ? [] : m[2].scan(/["']([~<>=! ]*\d[^"']*)["']/).flatten
     extra << ["gem #{name.dump}", *versions.map(&:dump)].join(", ")
     names << name
   end
