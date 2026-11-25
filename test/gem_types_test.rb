@@ -128,4 +128,19 @@ class GemTypesTest < Minitest::Test
       assert d[:implicit_nil]
     end
   end
+
+  def test_live_bottomize
+    _, _, decls = RBS::Parser.parse_signature(<<~RBS)
+      class K
+        def initialize: (String) -> void
+        def a: (Integer x) { (String) -> void } -> String
+        attr_reader b: Integer
+      end
+    RBS
+    io = StringIO.new
+    RBS::Writer.new(out: io).write(decls.map { GemTypes::Verify.bottomize(_1) })
+    assert_includes io.string, "def initialize: (String) -> void"
+    assert_includes io.string, "def a: (Integer x) { (String) -> void } -> bot"
+    assert_includes io.string, "attr_reader b: bot"
+  end
 end

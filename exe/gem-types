@@ -13,6 +13,8 @@
 #   gem-types steep     --workdir W --sig dir_or_file [--library json,uri]
 #   gem-types verify    --workdir W --sig path/to/foo.rbs   (exists + steep + test suite with type checks,
 #                       uncalled and too-wide declarations, PR text)
+#   gem-types live      --workdir W --sig path/to/foo.rbs [--test-cmd CMD]
+#                       (which declarations the runtime checks really cover: every return type made `bot`)
 #   gem-types update    --workdir W --sig path/to/foo.rbs [--from OLD_VERSION] [--library json,uri]
 #                       (existing RBS vs a new version: source changes, gone/missing methods, steep, tests)
 #   gem-types check     [rbs_check.sh options] -- <command>
@@ -156,12 +158,12 @@ when "draft"
 when "exists"
   opts = parse(ARGV)
   cfg = load_config(opts[:workdir], opts)
-  sig = opts[:sig] or abort "--sig is required"
+  sig = File.expand_path(opts[:sig] || abort("--sig is required"))
   exit GemTypes::Verify.exists(cfg, sig)
 when "verify"
   opts = parse(ARGV)
   cfg = load_config(opts[:workdir], opts)
-  sig = opts[:sig] or abort "--sig is required"
+  sig = File.expand_path(opts[:sig] || abort("--sig is required"))
   sigdir = File.directory?(sig) ? sig : File.dirname(sig)
   libs = opts[:library] || begin
     m = File.join(sigdir, "manifest.yaml")
@@ -205,10 +207,25 @@ when "verify"
   puts "- Ran the gem's own test suite with runtime type checking: #{p_[:total]} #{p_[:unit]}, #{r[:checks]} type checks, #{tail}."
   puts "", "(#{declared} declarations; run your call-every-method script with `gem-types check -c` and `gem-types coverage` before keeping the third line)"
   exit(exists.zero? && steep.zero? && r[:errors].empty? ? 0 : 1)
+when "live"
+  opts = parse(ARGV)
+  cfg = load_config(opts[:workdir], opts)
+  sig = File.expand_path(opts[:sig] || abort("--sig is required"))
+  cmd = opts[:test_cmd] || cfg.test_cmd or abort "no test command"
+  r = GemTypes::Verify.live(cfg, sig, cmd)
+  total = r[:checked].size + r[:unchecked].size
+  puts "#{r[:checked].size}/#{total} declarations failed as expected with every return type made bot (really checked at runtime)."
+  unless r[:unchecked].empty?
+    puts "Not checked by this command (never called, inherited rather than defined, or not hookable):"
+    r[:unchecked].each { |k| puts "  #{k}" }
+    puts "Call them from a script and rerun with --test-cmd, or check them with assertions."
+  end
+  puts "(initialize is not mutated: #{r[:skipped].size}; log: #{r[:log]})"
+  exit(r[:unchecked].empty? ? 0 : 1)
 when "update"
   opts = parse(ARGV)
   cfg = load_config(opts[:workdir], opts)
-  sig = opts[:sig] or abort "--sig is required"
+  sig = File.expand_path(opts[:sig] || abort("--sig is required"))
   sigdir = File.directory?(sig) ? sig : File.dirname(sig)
   libs = opts[:library] || begin
     m = File.join(sigdir, "manifest.yaml")
@@ -218,7 +235,7 @@ when "update"
 when "steep"
   opts = parse(ARGV)
   cfg = load_config(opts[:workdir], opts)
-  sig = opts[:sig] or abort "--sig is required"
+  sig = File.expand_path(opts[:sig] || abort("--sig is required"))
   exit GemTypes::Verify.steep(cfg, sig, opts[:library] || [])
 else
   usage = File.read(__FILE__).lines.drop_while { !_1.start_with?("#   gem-types") }

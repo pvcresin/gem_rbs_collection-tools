@@ -107,6 +107,12 @@ checked; rbs/test otherwise fails at load time on them. `coverage` counts a
 module's instance method as called when it was called on a class or module
 that extends it (`extend Memoist`, `extend XPath::DSL`).
 
+`gem-types live --workdir W --sig <rbs> --test-cmd "<cmd>"` makes those
+gaps visible: it reruns the command with every return and attr type made
+`bot` and lists the declarations that never failed. In the first five gems
+it found Struct accessors (not hooked), Enumerable methods inherited by a
+Hash subclass, and a method that ends in `exec`.
+
 Runtime checks only hook methods a class defines itself: a declaration that
 overrides an inherited method's type (e.g. `map` on a Hash subclass whose
 `each` yields values) is not checked at runtime. Check those with

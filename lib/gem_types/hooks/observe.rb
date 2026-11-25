@@ -60,8 +60,9 @@ module ObserveTypes
       end
     end
     def type_of_shallow(v)
-      return "nil" if v.nil?
-      return "bool" if v == true || v == false
+      # equal?, not ==: DSL objects (e.g. XPath::Expression) override ==.
+      return "nil" if nil.equal?(v)
+      return "bool" if true.equal?(v) || false.equal?(v)
       k = CLASS.bind_call(v)
       if Module === v then "singleton(#{NAME.bind_call(v) || 'anon'})"
       else
@@ -76,7 +77,7 @@ module ObserveTypes
     rescue StandardError
       "?"
     end
-    def immediate?(v) = v.nil? || v == true || v == false || v.is_a?(Integer) || v.is_a?(Symbol) || v.is_a?(Float)
+    def immediate?(v) = nil.equal?(v) || true.equal?(v) || false.equal?(v) || Integer === v || Symbol === v || Float === v
     def owner_name(tp)
       dc = tp.defined_class
       if dc.singleton_class?
@@ -182,7 +183,7 @@ ObserveTypes::TP = TracePoint.new(:call, :return, :raise, :rescue, :b_call, :b_r
     # while it propagates (rescue matching, ensure) do not hide it.
     e = ObserveTypes::PENDING[Thread.current]
     rv = tp.return_value
-    outcome = e && rv.nil? ? "raise #{e.class}" : ObserveTypes.type_of(rv)
+    outcome = e && nil.equal?(rv) ? "raise #{e.class}" : ObserveTypes.type_of(rv)
     d[:ret] << outcome
     unless outcome.start_with?("raise ")
       ok = d[:ok]; ok[:n] += 1; ok[:ret] << outcome; ok[:block] << frame[:blk]

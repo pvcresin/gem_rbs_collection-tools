@@ -4,6 +4,7 @@ require "json"
 require "tmpdir"
 require "fileutils"
 require "shellwords"
+require "stringio"
 
 module GemTypes
   # Checks a signature file against the gem itself.
@@ -206,6 +207,67 @@ module GemTypes
         out = IO.popen([RbConfig.ruby, script, f, calls], err: File::NULL, &:read)
         out.lines(chomp: true).reject { |l| l.end_with?("(private)") }
       end.uniq
+    end
+
+    # Proves the runtime checks really cover each declaration: runs `cmd`
+    # under rbs/test with a copy of the signatures where every return type
+    # (and attr type) is `bot`, so every checked call must fail. Declared
+    # methods that never fail were not checked by this run: never called,
+    # inherited rather than defined by the class (rbs/test only hooks a
+    # class's own methods), or hidden from the hook. Returns
+    # { checked: [...], unchecked: [...], skipped: [...] }.
+    def live(config, sig, cmd)
+      dir = File.join(config.out, "live")
+      FileUtils.rm_rf(dir)
+      FileUtils.mkdir_p(File.join(dir, "sig"))
+      sigdir = File.directory?(sig) ? sig : File.dirname(sig)
+      manifest = File.join(sigdir, "manifest.yaml")
+      FileUtils.cp(manifest, File.join(dir, "sig")) if File.exist?(manifest)
+      sig_files(sig).each_with_index do |f, i|
+        _, dirs, decls = RBS::Parser.parse_signature(File.read(f, encoding: "UTF-8"))
+        io = StringIO.new
+        w = RBS::Writer.new(out: io)
+        w.write(dirs + decls.map { |d| bottomize(d) })
+        File.write(File.join(dir, "sig", "#{i}_#{File.basename(f)}"), io.string)
+      end
+      targets = config.ns.flat_map { |n| [n, "#{n}::*"] }.join(",")
+      prefix = File.join(dir, "run")
+      src = Sources::Base.new(config)
+      check = File.join(LIBEXEC, "rbs_check.sh")
+      double = cmd.include?("rspec") ? "rspec" : "minitest"
+      src.sh(config.env, "#{check.shellescape} -s #{File.join(dir, 'sig').shellescape} -t #{targets.shellescape} " \
+                         "-d #{double} -o #{prefix.shellescape} -- bash -c #{cmd.shellescape}",
+             chdir: config.repo, log: File.join(dir, "run.log"))
+      failed = File.exist?("#{prefix}.errors.tsv") ? File.readlines("#{prefix}.errors.tsv", encoding: "UTF-8").filter_map { |l| l[/\t\[(.+?)\] \w+Error/, 1] }.uniq : []
+      rbs = RbsReader.read_files(sig_files(sig))
+      keys = rbs.methods.reject { |_, v| v.all? { |x| x.start_with?("(alias of") } }.keys
+      skipped, keys = keys.partition { |k| k.end_with?("#initialize") }
+      # `def self?.m` (module_function): the instance copy is private and
+      # normally not called; the singleton one stands for both.
+      keys.reject! do |k|
+        owner, sep, name = GemTypes.split_key(k)
+        sep == "#" && keys.include?("#{owner}.#{name}") && !failed.include?(k)
+      end
+      checked, unchecked = keys.partition { |k| failed.include?(k) }
+      { checked: checked.sort, unchecked: unchecked.sort, skipped: skipped.sort, log: File.join(dir, "run.log") }
+    end
+
+    def bottomize(decl)
+      bot = RBS::Types::Bases::Bottom.new(location: nil)
+      case decl
+      when RBS::AST::Declarations::Class, RBS::AST::Declarations::Module
+        decl.update(members: decl.members.map { |m| bottomize(m) })
+      when RBS::AST::Members::MethodDefinition
+        return decl if decl.name == :initialize
+
+        decl.update(overloads: decl.overloads.map do |o|
+          o.update(method_type: o.method_type.update(type: o.method_type.type.with_return_type(bot)))
+        end)
+      when RBS::AST::Members::AttrReader, RBS::AST::Members::AttrWriter, RBS::AST::Members::AttrAccessor
+        decl.update(type: bot)
+      else
+        decl
+      end
     end
 
     # Declared types wider than anything the test suite passed or got back:

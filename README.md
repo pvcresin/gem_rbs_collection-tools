@@ -34,6 +34,7 @@ exe/gem-types exists   --workdir W --sig path/to/foo.rbs
 exe/gem-types steep    --workdir W --sig dir_or_file [--library json,uri]
 exe/gem-types verify   --workdir W --sig path/to/foo.rbs
 exe/gem-types update   --workdir W --sig gems/foo/1.2 [--from 1.2.0]
+exe/gem-types live     --workdir W --sig path/to/foo.rbs [--test-cmd "..."]
 exe/gem-types check    [-s sigdir] [-t targets] [-o prefix] [-c calls] [-d rspec|minitest] -- <command>
 exe/gem-types coverage <file.rbs> <calls file>
 ```
@@ -48,6 +49,7 @@ exe/gem-types coverage <file.rbs> <calls file>
 | `exists` | Loads the gem and checks that every declared method, class kind and superclass exists. |
 | `steep` | Type-checks the gem's own code against the signatures; lists where they disagree. |
 | `verify` | `exists` + `steep` + the gem's test suite with and without runtime type checking, declared methods the suite never called, declared types wider than anything the suite saw; prints a Verification section for the PR. |
+| `live` | Reruns a command with every declared return type made `bot` and lists declarations that never failed: the ones the runtime checks did not really cover. |
 | `update` | For an existing RBS and a new gem version: source changes since `--from`, declared methods that are gone, public methods not declared (with suggestions), Steep, test-suite type errors. |
 | `check` | Runs any command under `rbs/test/setup`; `-o` records type errors instead of raising, `-c` records calls. |
 | `coverage` | Lists methods declared in an RBS file that a run never called. |
@@ -98,6 +100,10 @@ less $W/report.md $W/draft.rbs
   and their test suites do run, in a separate workdir.
 
 ## Claude Code
+
+Saved workflows in `.claude/workflows/`: `gem-rbs-author` (one agent per
+gem writes and verifies the RBS, then an independent reviewer tries to
+falsify it) and `gem-rbs-review` (the review alone, for existing RBS).
 
 `.claude/skills/gem-rbs-collection/` is a skill that follows this workflow.
 Include this repository in the session (or copy the skill into

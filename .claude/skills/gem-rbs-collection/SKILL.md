@@ -41,6 +41,26 @@ scripts, run from its checkout.
 - **Pushes, force-pushes, PR edits and comments are outward-facing**: get
   the user's OK for each batch unless they already asked for exactly that.
 
+## Fast path (what worked for 5 gems in about an hour)
+
+1. `gem-types pick ... --min-months 24`; choose ~8 candidates (pure Ruby,
+   small-to-medium API, a test suite).
+2. `gem-types run <8 gems> --base $SCRATCH/prN --jobs 4` (about a minute).
+   Keep the ones marked ok; fix a near miss by hand (see "Test suites that
+   do not run" below) or drop it.
+3. One worktree per gem: `git -C <gem_rbs_collection> worktree add -b add-<gem> $SCRATCH/wt/<gem> <upstream main>`.
+4. Run the saved workflow `gem-rbs-author` (in `.claude/workflows/`, needs
+   the user's opt-in to multi-agent work) with
+   `{ tools: $TOOLS, items: [{ gem, ver, ns, workdir, worktree }] }`: one
+   author agent per gem writes and verifies the RBS, then an independent
+   reviewer who sees only the RBS and the gem tries to falsify it. Without
+   workflows, start the same two prompts as background subagents.
+5. Review every RBS yourself against the source (the reviewers have missed
+   nothing so far, but authors have: e.g. a Hash subclass whose `each`
+   yields values). Fix, rerun `bin/test`, RuboCop and `gem-types live`.
+6. Commit as pvcresin (no trailers), push the branches, and ask the user to
+   tell the upstream session to open the PRs (see section 6).
+
 ## 1. Pick gems
 
 Priority, in order:
@@ -136,6 +156,40 @@ name parameters properly, and decide unions.
 - Keep common calls convenient: do not make a return nil-able if every
   path through the gem sets it.
 
+## Type patterns seen in real gems
+
+- `module_function` → `def self?.m`. A module extended into classes
+  (`extend Memoist`) → declare instance methods on the module; users add
+  `extend` in their own RBS.
+- Metaprogrammed methods (`define_method` over a list, `alias_method`
+  loops): declare each one explicitly after checking it exists at runtime
+  (`gem-types exists`).
+- An early `return` inside a `class_eval`/`instance_eval` block returns
+  from the enclosing method (memoist `memoize` → nil when already memoized).
+- A Hash/Array subclass overriding `each`: inherited Enumerable methods
+  follow the override (Definitions#map yields values, not pairs). Declare
+  the common ones; runtime checks do not cover inherited methods, so assert.
+- `system(...)` → `bool?`; `cond ? x : nil` and `x if cond` → nil-able;
+  `||=` memo of true/false stays bool.
+- Values that a DSL renders differently by class: check by rendering
+  (xpath: a String element name becomes a quoted literal → Symbol only).
+- OptionParser switches without `--[no-]` never give false.
+- Struct members: `attr_accessor` on `class X < Struct[untyped]`; Struct
+  accessors are not hooked by rbs/test, assert their values.
+- Methods ending in `exec`/`exit` → `bot` only when no path returns.
+- DSL blocks run with `class_eval` in a new class: `[self: Class & Mod...]`.
+
+## Test suites that do not run
+
+- RSpec 2 specs: `stub!` → `allow(...).to receive`, `any_number_of_times`
+  → `allow`, `config.expect_with :stdlib` → `:rspec` plus
+  `config.include Test::Unit::Assertions` (require
+  "test/unit/assertions"), drop `require 'rspec/autorun'`. Edit only the
+  scratch checkout.
+- Repos without release tags: `prepare` takes the commit that set the
+  version. Gemfile entries for other platforms are skipped.
+- `bundle install` conflicts: delete the offending line in `env/Gemfile`.
+
 ## 4. Verify
 
 `gem-types verify --workdir W --sig gems/<gem>/<ver>/<gem>.rbs` runs the
@@ -158,6 +212,11 @@ the PR with the numbers. The steps it covers, plus the ones it does not:
 4. Runtime, the gem's test suite under `gem-types check -o` (log mode) with
    `-d rspec|minitest`. Triage every distinct error with the table in
    `docs/verification.md`; fix real ones and rerun until gone.
+5. Proof that the checks bite: `gem-types live --workdir W --sig <rbs>
+   --test-cmd "<call-every-method script>"` reruns with every return type
+   made `bot` and lists declarations that did not fail (never called,
+   inherited, Struct accessors, exec). Each one listed needs an assertion
+   on the real value, or a reason.
 
 ## Updating an existing gem to a new version
 
@@ -190,8 +249,11 @@ directory to `gems/<gem>/<new major.minor>` and work through the list.
   `git push --force-with-lease=<branch>:<old full sha> origin <branch>`
   after checking the remote still has the old sha.
 - Opening PRs: a cloud session holding the fork cannot open upstream PRs;
-  start a session with ruby/gem_rbs_collection as its source and give it
-  the branches, titles (commit subjects) and bodies. That session will
+  start (or reuse) a session with ruby/gem_rbs_collection as its source and
+  give it the branches, titles (commit subjects) and bodies. It will not
+  open public PRs on a request relayed from another session: send it the
+  details, then tell the user to type "open the N PRs" in that session
+  themselves (say this up front so they are not surprised). That session will
   refuse to merge on a request relayed from another session; merging is
   the user's call (they comment `/merge` or ask that session directly).
 - No PR template. Add a short verification section to the PR body
