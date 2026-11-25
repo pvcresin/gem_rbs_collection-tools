@@ -9,11 +9,20 @@ module GemTypes
   # namespace, collect and draft for several gems, in parallel. A gem that
   # fails a step is skipped with the reason; the others go on.
   class Batch
-    Result = Struct.new(:gem, :workdir, :status, :step, :reason, :tests, :ns, :methods, keyword_init: true)
+    Result = Struct.new(:gem, :workdir, :status, :step, :reason, :tests, :ns, :methods, :version, :worktree,
+                        :test_cmd, keyword_init: true)
 
     STEPS = %w[prepare install tests namespace collect draft].freeze
 
-    def initialize(gems, base:, jobs: 2, exe: File.join(ROOT, "exe", "gem-types"))
+    # Signs of RSpec 2 era specs failing on RSpec 3.
+    RSPEC2 = /undefined method [`']stub!'|any_number_of_times|:stdlib is not supported|undefined method [`']mock' for|and_return\(\)/
+
+    # worktrees: a gem_rbs_collection checkout; for each gem that gets a
+    # draft, a worktree on branch add-<gem> is created next to the workdirs
+    # (base/wt/<gem>) from `ref`.
+    def initialize(gems, base:, jobs: 2, exe: File.join(ROOT, "exe", "gem-types"), worktrees: nil, ref: "HEAD")
+      @worktrees = worktrees && File.expand_path(worktrees)
+      @ref = ref
       @gems = gems
       @base = File.expand_path(base)
       @jobs = [jobs, 1].max
@@ -67,15 +76,31 @@ module GemTypes
 
       env = { "BUNDLE_GEMFILE" => File.join(w, "env", "Gemfile"), "GEM_HOME" => File.join(w, "gemhome"),
               "GEM_PATH" => File.join(w, "gemhome") }
-      return r unless step.("install", sh(env, "bundle install --quiet", File.join(w, "env"), File.join(logs, "install.log")),
+      return r unless step.("install", install(w, env, logs),
                             "bundle install failed (see run/install.log; edit env/Gemfile and rerun)")
 
       test_cmd = File.read(File.join(w, "test_cmd")).strip if File.exist?(File.join(w, "test_cmd"))
       return r unless step.("tests", test_cmd, "no test command guessed")
 
+      r.test_cmd = test_cmd
+      r.version = Dir[File.join(w, "*.gem")].map { |f| File.basename(f, ".gem")[/-(\d+\.\d+)[^-]*\z/, 1] }.first
       log = File.join(logs, "tests.log")
       sh(env, test_cmd, File.join(w, "repo"), log)
-      counts = Verify.test_counts(File.read(log, encoding: "UTF-8"))
+      text = File.read(log, encoding: "UTF-8")
+      counts = Verify.test_counts(text)
+      if test_cmd.include?("rspec") && (counts[:total].zero? || counts[:failed].positive?) && text.match?(RSPEC2)
+        # RSpec 2 era specs: retry with the compatibility shim and keep it
+        # (saved in gem-types.json, so collect/verify/check use it too).
+        shim = { "RUBYOPT" => "-r#{File.join(LIBEXEC, 'rspec2_compat.rb')}" }
+        log2 = File.join(logs, "tests-rspec2.log")
+        sh(env.merge(shim), test_cmd, File.join(w, "repo"), log2)
+        c2 = Verify.test_counts(File.read(log2, encoding: "UTF-8"))
+        if c2[:total] > counts[:total] || (c2[:total] == counts[:total] && c2[:failed] < counts[:failed])
+          counts = c2
+          env = env.merge(shim)
+          File.write(File.join(w, "gem-types.json"), JSON.pretty_generate(env: env, test_cmd: test_cmd))
+        end
+      end
       r.tests = "#{counts[:total]} #{counts[:unit]}, #{counts[:failed]} failing"
       return r unless step.("tests", counts[:total].positive?, "the tests did not run (see run/tests.log)")
       return r unless step.("tests", counts[:failed] * 2 <= counts[:total], "most tests fail without tooling (#{r.tests})")
@@ -95,6 +120,7 @@ module GemTypes
       return r unless step.("draft", ok && File.exist?(draft), "see run/draft.log")
 
       r.methods = File.readlines(draft).count { |l| l.match?(/\A\s+(def|attr_)/) }
+      r.worktree = worktree(gem) if @worktrees
       r.status = "ok"
       r.step = nil
       r
@@ -102,6 +128,52 @@ module GemTypes
       r.reason = "#{e.class}: #{e.message}"
       r
     end
+
+    # bundle install; on failure, drop the repo-Gemfile gems the log names
+    # (the package's own dependencies stay) and try once more.
+    def install(w, env, logs)
+      gemfile = File.join(w, "env", "Gemfile")
+      log = File.join(logs, "install.log")
+      return true if sh(env, "bundle install --quiet", File.join(w, "env"), log)
+
+      text = File.read(log, encoding: "UTF-8")
+      lines = File.readlines(gemfile)
+      start = lines.index { |l| l.start_with?("# From ") } or return false
+      stop = lines.index { |l| l.start_with?("# For gem-types") } || lines.size
+      dropped = []
+      (start...stop).each do |i|
+        name = lines[i][/\Agem "([^"]+)"/, 1] or next
+        next unless text.match?(/\b#{Regexp.escape(name)}\b/)
+
+        dropped << name
+        lines[i] = "# #{lines[i].chomp}  # dropped: bundle install failed on it\n"
+      end
+      return false if dropped.empty?
+
+      File.write(gemfile, lines.join)
+      sh(env, "bundle install --quiet", File.join(w, "env"), File.join(logs, "install-retry.log"))
+    end
+
+    def worktree(gem)
+      dir = File.join(@base, "wt", gem)
+      return dir if Dir.exist?(dir)
+
+      branch = "add-#{gem}"
+      exists = system("git", "-C", @worktrees, "rev-parse", "--verify", "-q", branch, out: File::NULL, err: File::NULL)
+      args = exists ? [dir, branch] : ["-b", branch, dir, @ref]
+      @lock.synchronize { system("git", "-C", @worktrees, "worktree", "add", "-q", *args, out: File::NULL, err: File::NULL) }
+      Dir.exist?(dir) ? dir : nil
+    end
+
+    # Arguments for the gem-rbs-author workflow, for the gems that got a draft.
+    def workflow_args(results)
+      items = results.select { |r| r.status == "ok" }.map do |r|
+        { gem: r.gem, ver: r.version, ns: r.ns.flat_map { |n| [n, "#{n}::*"] }.join(","),
+          workdir: r.workdir, worktree: r.worktree, test_cmd: r.test_cmd }.compact
+      end
+      { tools: ROOT, items: items }
+    end
+    public :workflow_args
 
     # What to require (a lib file named like the gem) and the top-level
     # constants that requiring it defines from the gem's own lib.

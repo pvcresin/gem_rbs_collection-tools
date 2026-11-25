@@ -45,21 +45,28 @@ scripts, run from its checkout.
 
 1. `gem-types pick ... --min-months 24`; choose ~8 candidates (pure Ruby,
    small-to-medium API, a test suite).
-2. `gem-types run <8 gems> --base $SCRATCH/prN --jobs 4` (about a minute).
-   Keep the ones marked ok; fix a near miss by hand (see "Test suites that
-   do not run" below) or drop it.
-3. One worktree per gem: `git -C <gem_rbs_collection> worktree add -b add-<gem> $SCRATCH/wt/<gem> <upstream main>`.
+2. `gem-types run <8 gems> --base $SCRATCH/prN --jobs 4 --worktrees
+   <gem_rbs_collection checkout> --ref <upstream main sha>` (a minute or
+   two). It retries RSpec 2 era specs with a compatibility shim and a
+   failed `bundle install` without the repo-Gemfile gems it names, creates
+   a worktree on `add-<gem>` for each gem that got a draft, and writes
+   `$SCRATCH/prN/workflow-args.json`. Fix a near miss by hand (see "Test
+   suites that do not run" below) or drop it.
+3. (worktrees are already made by step 2)
 4. Run the saved workflow `gem-rbs-author` (in `.claude/workflows/`, needs
-   the user's opt-in to multi-agent work) with
-   `{ tools: $TOOLS, items: [{ gem, ver, ns, workdir, worktree }] }`: one
+   the user's opt-in to multi-agent work) with the contents of
+   `workflow-args.json` as its args: one
    author agent per gem writes and verifies the RBS, then an independent
    reviewer who sees only the RBS and the gem tries to falsify it. Without
    workflows, start the same two prompts as background subagents.
 5. Review every RBS yourself against the source (the reviewers have missed
    nothing so far, but authors have: e.g. a Hash subclass whose `each`
    yields values). Fix, rerun `bin/test`, RuboCop and `gem-types live`.
-6. Commit as pvcresin (no trailers), push the branches, and ask the user to
-   tell the upstream session to open the PRs (see section 6).
+6. `gem-types pr-text --workdir W --sig <rbs>` drafts the commit message
+   from the RBS, the source (public methods left out) and the saved
+   `verify`/`live` results; edit the bullets into prose. Commit as pvcresin
+   (no trailers), push the branches, and ask the user to tell the upstream
+   session to open the PRs (see section 6).
 
 ## 1. Pick gems
 
@@ -181,14 +188,15 @@ name parameters properly, and decide unions.
 
 ## Test suites that do not run
 
-- RSpec 2 specs: `stub!` → `allow(...).to receive`, `any_number_of_times`
-  → `allow`, `config.expect_with :stdlib` → `:rspec` plus
-  `config.include Test::Unit::Assertions` (require
-  "test/unit/assertions"), drop `require 'rspec/autorun'`. Edit only the
-  scratch checkout.
+- RSpec 2 specs: `run` detects them and uses `libexec/rspec2_compat.rb`
+  (stub!, any_number_of_times, and_return(), mock, expect_with :stdlib),
+  saved as RUBYOPT in `gem-types.json` so every later command uses it. By
+  hand: `RUBYOPT=-r$TOOLS/libexec/rspec2_compat.rb`. os 1.1's unmodified
+  specs pass 36/36 with it.
 - Repos without release tags: `prepare` takes the commit that set the
   version. Gemfile entries for other platforms are skipped.
-- `bundle install` conflicts: delete the offending line in `env/Gemfile`.
+- `bundle install` conflicts: `run` comments out the repo-Gemfile gems the
+  error names and retries once; otherwise delete the line in `env/Gemfile`.
 
 ## 4. Verify
 

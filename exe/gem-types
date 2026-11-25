@@ -6,7 +6,8 @@
 #
 #   gem-types pick      <gem_rbs_collection dir> [--top 500] [--limit 30] [--min-months N]
 #   gem-types prepare   <gem> [version] [workdir]
-#   gem-types run       <gem> [gem...] [--base DIR] [--jobs N]   (prepare..draft for each gem, in parallel)
+#   gem-types run       <gem> [gem...] [--base DIR] [--jobs N] [--worktrees <gem_rbs_collection> [--ref REF]]
+#                       (prepare..draft for each gem in parallel; worktrees on add-<gem>; workflow args)
 #   gem-types collect   --workdir W --ns Foo --test-cmd "..." [--sources a,b] [--jobs N] [--require foo] [--lib lib] [--tests test,spec]
 #   gem-types draft     --workdir W [--existing path/to/foo.rbs]
 #   gem-types exists    --workdir W --sig path/to/foo.rbs
@@ -15,6 +16,8 @@
 #                       uncalled and too-wide declarations, PR text)
 #   gem-types live      --workdir W --sig path/to/foo.rbs [--test-cmd CMD]
 #                       (which declarations the runtime checks really cover: every return type made `bot`)
+#   gem-types pr-text   --workdir W --sig path/to/foo.rbs   (commit message / PR body draft from the RBS,
+#                       the source and the saved verify/live results)
 #   gem-types update    --workdir W --sig path/to/foo.rbs [--from OLD_VERSION] [--library json,uri]
 #                       (existing RBS vs a new version: source changes, gone/missing methods, steep, tests)
 #   gem-types check     [rbs_check.sh options] -- <command>
@@ -100,16 +103,23 @@ when "coverage" then libexec("coverage_report.rb", ARGV)
 when "run"
   base = "rbs-work"
   jobs = 2
+  worktrees = nil
+  ref = "HEAD"
   OptionParser.new do |o|
     o.on("--base DIR") { base = _1 }
     o.on("--jobs N", Integer) { jobs = _1 }
+    o.on("--worktrees REPO") { worktrees = _1 }
+    o.on("--ref REF") { ref = _1 }
   end.parse!(ARGV)
-  abort "usage: gem-types run <gem> [gem...] [--base DIR] [--jobs N]" if ARGV.empty?
-  batch = GemTypes::Batch.new(ARGV.dup, base: base, jobs: jobs)
+  abort "usage: gem-types run <gem> [gem...] [--base DIR] [--jobs N] [--worktrees <gem_rbs_collection>] [--ref REF]" if ARGV.empty?
+  batch = GemTypes::Batch.new(ARGV.dup, base: base, jobs: jobs, worktrees: worktrees, ref: ref)
   results = batch.run
   table = batch.summary(results)
   File.write(File.join(File.expand_path(base), "run-summary.md"), table + "\n")
+  args_file = File.join(File.expand_path(base), "workflow-args.json")
+  File.write(args_file, JSON.pretty_generate(batch.workflow_args(results)))
   puts table
+  puts "", "Arguments for the gem-rbs-author workflow: #{args_file}"
   exit(results.all? { _1.status == "ok" } ? 0 : 1)
 when "collect"
   opts = parse(ARGV)
@@ -198,6 +208,10 @@ when "verify"
     wide.each { |key, slot, msg| puts "  #{key} #{slot}: #{msg}" }
   end
   declared = rbs_files.sum { |f| GemTypes::RbsReader.read_files([f]).methods.size }
+  File.write(File.join(cfg.out, "verify.json"), JSON.pretty_generate(
+    exists: exists.zero?, steep: steep.zero?, plain: p_, checked: c, checks: r[:checks],
+    errors: r[:errors], uncalled: r[:uncalled], too_wide: wide
+  ))
   puts "", "== Verification section for the PR (edit the last line to explain any remaining type errors)", ""
   puts "## Verification", ""
   puts "- `bin/test` and RuboCop pass."
@@ -214,6 +228,7 @@ when "live"
   cmd = opts[:test_cmd] || cfg.test_cmd or abort "no test command"
   r = GemTypes::Verify.live(cfg, sig, cmd)
   total = r[:checked].size + r[:unchecked].size
+  File.write(File.join(cfg.out, "live.json"), JSON.pretty_generate(r.merge(cmd: cmd)))
   puts "#{r[:checked].size}/#{total} declarations failed as expected with every return type made bot (really checked at runtime)."
   unless r[:unchecked].empty?
     puts "Not checked by this command (never called, inherited rather than defined, or not hookable):"
@@ -222,6 +237,14 @@ when "live"
   end
   puts "(initialize is not mutated: #{r[:skipped].size}; log: #{r[:log]})"
   exit(r[:unchecked].empty? ? 0 : 1)
+when "pr-text"
+  opts = parse(ARGV)
+  cfg = load_config(opts[:workdir], opts)
+  sig = File.expand_path(opts[:sig] || abort("--sig is required"))
+  text = GemTypes::PrText.build(cfg, opts[:workdir], sig)
+  out = File.join(opts[:workdir], "commit-message.txt")
+  File.write(out, text)
+  puts text, "", "(written to #{out}; edit the bullets, then `git commit -F` it)"
 when "update"
   opts = parse(ARGV)
   cfg = load_config(opts[:workdir], opts)
