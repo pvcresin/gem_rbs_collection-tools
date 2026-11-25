@@ -1,6 +1,6 @@
 # Ranks candidate gems for gem_rbs_collection.
 #
-# Usage: ruby pick_gems.rb <path to gem_rbs_collection checkout> [--top 500] [--limit 30] [--min-months N]
+# Usage: ruby pick_gems.rb <path to gem_rbs_collection checkout> [--top 500] [--limit 30] [--min-months N] [--no-pr-check]
 #
 # Priority, in order:
 #   1. among the top N gems by total downloads (bestgems.org ranking)
@@ -10,8 +10,10 @@
 # With --min-months N, only gems whose latest release is at least N months
 # old are listed, ordered by status then download rank (avoids a list of
 # long-abandoned gems at the top).
-# Skips gems that ship their own RBS (sig/ in the gem) or whose RBS is
-# bundled with the rbs gem (stdlib/). Caches HTTP responses in
+# Skips gems whose package ships RBS (any .rbs file, usually sig/), gems
+# whose RBS is bundled with the rbs gem (stdlib/), and gems with an open PR
+# in ruby/gem_rbs_collection (--no-pr-check to skip that check). Untyped
+# gems are the point: those are the ones the collection should cover. Caches HTTP responses in
 # ~/.cache/pick_gems for a day.
 require "net/http"; require "json"; require "fileutils"; require "time"; require "digest"
 repo = ARGV[0] or abort "usage: ruby pick_gems.rb <gem_rbs_collection dir> [--top N] [--limit N]"
@@ -67,13 +69,33 @@ if min_months
 else
   rows.sort_by! { |r| [r[:status], -r[:months], r[:rank]] }
 end
-# Checking for bundled sig/ needs the gem's file list: only do it for the shortlist.
+# The shortlist gets the slower checks, one gem at a time:
+# - does the gem ship its own RBS? (any .rbs file in the package, usually
+#   sig/). Those are skipped: they already have types.
+# - is there an open pull request for it in ruby/gem_rbs_collection?
+#   (needs the gh CLI; skipped with --no-pr-check)
+def bundled_rbs(name, version)
+  files = `gem specification --remote #{name} -v #{version} files 2>/dev/null`.lines.map { _1.sub(/\A- /, "").strip }
+  rbs = files.grep(/\.rbs\z/)
+  rbs.empty? ? nil : (rbs.any? { _1.start_with?("sig/") } ? "sig/" : rbs.first)
+end
+
+def open_pr(name)
+  q = "repo:ruby/gem_rbs_collection is:pr is:open in:title #{name}"
+  out = `gh api -X GET search/issues -f q=#{q.dump} --jq '.items[] | "#\\(.number) \\(.title)"' 2>/dev/null`
+  sleep 2.5 # search API: a few requests per minute
+  out.lines.map(&:strip).find { |t| t.match?(/\b#{Regexp.escape(name)}\b/i) }
+end
+
+check_prs = !ARGV.include?("--no-pr-check") && system("command -v gh >/dev/null 2>&1")
 picked = []
 rows.each do |r|
   break if picked.size >= limit
-  spec = `gem specification --remote #{r[:name]} -v #{r[:version]} files 2>/dev/null`
-  if spec.lines.any? { |l| l =~ %r{\A- sig/} }
-    warn "skip #{r[:name]}: ships its own RBS"; next
+  if (rbs = bundled_rbs(r[:name], r[:version]))
+    warn "skip #{r[:name]}: ships its own RBS (#{rbs})"; next
+  end
+  if check_prs && (pr = open_pr(r[:name]))
+    warn "skip #{r[:name]}: open PR #{pr}"; next
   end
   picked << r
 end

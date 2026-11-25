@@ -43,25 +43,15 @@ else
 fi
 if [ -d "$W/repo" ]; then
   mkdir -p "$W/env"
-  # Dependencies come from the packaged gem's metadata, not the repo's
-  # gemspec: Bundler evaluates a gemspec at startup, and many gemspecs
-  # `require` the library, which would load it before any tracing hook.
-  # Tests load the library from repo/lib (-Ilib).
-  ruby -rrubygems/package -e '
-    spec = Gem::Package.new(ARGV[0]).spec
-    puts %(source "https://rubygems.org")
-    puts %(# #{spec.name} #{spec.version}: dependencies from the gem package; the gem itself loads from repo/lib)
-    spec.dependencies.each do |d|
-      reqs = d.requirement.requirements.map { |op, v| "#{op} #{v}" }.reject { _1 == ">= 0" }
-      puts ["gem #{d.name.dump}", *reqs.map(&:dump)].join(", ") + (d.type == :development ? " # development" : "")
-    end
-  ' "$W/$gem-$ver.gem" > "$W/env/Gemfile"
-  {
-    [ -f "$W/repo/Gemfile" ] && echo "# Test gems may also be listed in $W/repo/Gemfile"
-    echo 'gem "rbs"'
-    echo 'gem "lumitrace"'
-    echo 'gem "rbs-trace"'
-  } >> "$W/env/Gemfile"
-  echo "env: $W/env/Gemfile (add test gems from the repo's Gemfile if the tests need more)"
+  here=$(cd "$(dirname "$0")" && pwd)
+  ruby "$here/env_gemfile.rb" "$W/$gem-$ver.gem" "$W/repo" > "$W/env/Gemfile"
+  echo "env: $W/env/Gemfile (from the package's dependencies and the repo's Gemfile)"
+  cmd=$(ruby "$here/detect_test_cmd.rb" "$W/repo" "$W/env/Gemfile")
+  if [ -n "$cmd" ]; then
+    printf '%s\n' "$cmd" > "$W/test_cmd"
+    echo "test command (guess, saved to $W/test_cmd; collect uses it unless --test-cmd is given): $cmd"
+  else
+    echo "test command: could not guess; pass --test-cmd to collect" >&2
+  fi
 fi
 echo "workdir: $W"

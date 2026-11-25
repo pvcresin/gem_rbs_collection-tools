@@ -126,10 +126,18 @@ module GemTypes
       end
       # Diagnostics inside classes the RBS does not declare at all are about
       # code we did not type; drop them.
-      declared = RbsReader.read_files(sig_files(sig), include_private: true).classes.keys
+      rbs = RbsReader.read_files(sig_files(sig), include_private: true)
+      declared = rbs.classes.keys
       hits.select! do |key, kind, _|
-        owner = key.include?(":") && !key.match?(/\A[\w:]+[#.]/) ? nil : GemTypes.split_key(key).first
-        kind == "UndeclaredMethodDefinition" || owner.nil? || declared.include?(owner)
+        next true if kind == "UndeclaredMethodDefinition"
+
+        method_key = key.match?(/\A[\w:]+[#.][^\s:]+\z/)
+        next true unless method_key # outside any def: keep
+
+        owner = GemTypes.split_key(key).first
+        # Only methods the RBS declares: an undeclared method checked against
+        # an inherited signature (method_missing, ==, ...) is not ours.
+        declared.include?(owner) && rbs.methods.key?(key)
       end
       undeclared, mismatches = hits.partition { |_, kind, _| kind == "UndeclaredMethodDefinition" }
       puts "Steep: #{lines.size} errors in the gem's code; #{mismatches.size} where code and signatures disagree."
@@ -145,6 +153,46 @@ module GemTypes
       hits = mismatches
       puts "(full output: #{File.join(dir, 'steep.out')})"
       hits.empty? ? 0 : 1
+    end
+
+    # Runs the gem's own test suite twice, without and with RBS runtime type
+    # checking (log mode), and summarizes: examples, failures in each run,
+    # number of type checks, distinct type errors. Returns the summary hash.
+    def suite(config, sig)
+      sigdir = File.directory?(sig) ? sig : File.dirname(sig)
+      raise "no test command (pass --test-cmd)" unless config.test_cmd
+
+      targets = config.ns.flat_map { |n| [n, "#{n}::*"] }.join(",")
+      double = config.test_cmd.include?("rspec") ? "rspec" : "minitest"
+      prefix = File.join(config.out, "suite")
+      FileUtils.mkdir_p(config.out)
+      src = Sources::Base.new(config)
+      plain_log = File.join(config.out, "suite-plain.log")
+      src.sh(config.env, config.test_cmd, chdir: config.repo, log: plain_log)
+      check = File.join(LIBEXEC, "rbs_check.sh")
+      checked_log = File.join(config.out, "suite-checked.log")
+      src.sh(config.env, "#{check.shellescape} -s #{sigdir.shellescape} -t #{targets.shellescape} -d #{double} " \
+                         "-o #{prefix.shellescape} -- #{config.test_cmd}",
+             chdir: config.repo, log: checked_log)
+      plain = test_counts(File.read(plain_log, encoding: "UTF-8"))
+      checked = test_counts(File.read(checked_log, encoding: "UTF-8"))
+      checks = File.exist?("#{prefix}.checked.tsv") ? File.readlines("#{prefix}.checked.tsv").sum { _1.to_i } : 0
+      errors = File.exist?("#{prefix}.errors.tsv") ? File.readlines("#{prefix}.errors.tsv", chomp: true, encoding: "UTF-8").reject(&:empty?) : []
+      { plain: plain, checked: checked, checks: checks, errors: errors,
+        errors_file: "#{prefix}.errors.tsv", logs: [plain_log, checked_log] }
+    end
+
+    # Sums "N examples, M failures" (RSpec) and "N runs, A assertions,
+    # M failures, E errors" (Minitest / test-unit) lines in a log.
+    def test_counts(log)
+      total = 0
+      failed = 0
+      unit = nil
+      log.scan(/(\d+) examples?, (\d+) failures?/) { total += $1.to_i; failed += $2.to_i; unit = "examples" }
+      log.scan(/(\d+) (?:runs|tests), \d+ assertions, (\d+) failures, (\d+) errors/) do
+        total += $1.to_i; failed += $2.to_i + $3.to_i; unit ||= "runs"
+      end
+      { total: total, failed: failed, unit: unit || "tests" }
     end
 
     def sig_files(sig)

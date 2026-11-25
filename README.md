@@ -31,18 +31,20 @@ exe/gem-types collect  --workdir W --ns Foo --test-cmd "..." [--sources a,b] [--
 exe/gem-types draft    --workdir W [--existing path/to/foo.rbs]
 exe/gem-types exists   --workdir W --sig path/to/foo.rbs
 exe/gem-types steep    --workdir W --sig dir_or_file [--library json,uri]
+exe/gem-types verify   --workdir W --sig path/to/foo.rbs
 exe/gem-types check    [-s sigdir] [-t targets] [-o prefix] [-c calls] [-d rspec|minitest] -- <command>
 exe/gem-types coverage <file.rbs> <calls file>
 ```
 
 | Command | What it does |
 |---|---|
-| `pick` | Ranks gems to type next: top N by downloads, not yet in the collection (or without reviewers), oldest latest release. Skips gems that ship `sig/` or are bundled with rbs. |
-| `prepare` | Unpacks the gem, clones upstream at the release tag, and writes a Gemfile for its tests from the package's dependencies (plus rbs, rbs-trace, lumitrace). |
+| `pick` | Ranks gems to type next: top N by downloads, not yet in the collection (or without reviewers), oldest latest release. Skips gems that already have types (any `.rbs` in the package, or bundled with rbs) and gems with an open PR. |
+| `prepare` | Unpacks the gem, clones upstream at the release tag, writes a Gemfile for its tests (package dependencies + the repo's Gemfile + rbs, rbs-trace, lumitrace) and guesses the test command. |
 | `collect` | Runs the evidence sources (below) and keeps their raw output in `W/evidence/`. |
 | `draft` | Merges the evidence into `W/draft.rbs` and `W/report.md`. |
 | `exists` | Loads the gem and checks that every declared method, class kind and superclass exists. |
 | `steep` | Type-checks the gem's own code against the signatures; lists where they disagree. |
+| `verify` | `exists` + `steep` + the gem's test suite with and without runtime type checking; prints a Verification section for the PR. |
 | `check` | Runs any command under `rbs/test/setup`; `-o` records type errors instead of raising, `-c` records calls. |
 | `coverage` | Lists methods declared in an RBS file that a run never called. |
 

@@ -28,17 +28,19 @@ $T prepare netrc "" $W
 (cd $W/repo && BUNDLE_GEMFILE=$W/env/Gemfile GEM_HOME=$W/gemhome GEM_PATH=$W/gemhome \
    bash -c 'for t in test/test_*.rb; do bundle exec ruby -Ilib -Itest $t; done')
 
-$T collect --workdir $W --ns Netrc \
-  --test-cmd 'for t in test/test_*.rb; do bundle exec ruby -Ilib -Itest $t; done'
+$T collect --workdir $W --ns Netrc      # uses $W/test_cmd from prepare, or --test-cmd '...'
 $T draft --workdir $W [--existing <gem_rbs_collection>/gems/netrc/0.11/netrc.rbs]
 ```
 
 - `prepare` writes `$W/env/Gemfile` from the **packaged gem's** dependency
-  metadata, not from the repo's gemspec: Bundler evaluates a gemspec at
+  metadata plus the gems in the repo's Gemfile (linters and debuggers
+  dropped), not from the repo's gemspec: Bundler evaluates a gemspec at
   startup, and many gemspecs `require` the library, which loads it before any
   tracing hook (Lumitrace then sees nothing). The tests load the library from
-  `repo/lib` via `-Ilib`. If tests need more gems (often listed only in the
-  repo's Gemfile), add them to `$W/env/Gemfile`.
+  `repo/lib` via `-Ilib`. If a gem from the repo's Gemfile does not
+  install, remove its line; if a test helper still misses something, add it.
+- `prepare` also guesses the test command (rspec, `rake test`, or a loop
+  over test files) and saves it to `$W/test_cmd`.
 - `--test-cmd` runs in `repo/` with that environment
   (`BUNDLE_DISABLE_EXEC_LOAD=true` is set so `bundle exec rspec` starts a
   real process the hooks can attach to). Every Ruby process it

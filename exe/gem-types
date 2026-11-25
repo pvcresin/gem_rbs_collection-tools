@@ -10,6 +10,7 @@
 #   gem-types draft     --workdir W [--existing path/to/foo.rbs]
 #   gem-types exists    --workdir W --sig path/to/foo.rbs
 #   gem-types steep     --workdir W --sig dir_or_file [--library json,uri]
+#   gem-types verify    --workdir W --sig path/to/foo.rbs   (exists + steep + test suite with type checks, PR text)
 #   gem-types check     [rbs_check.sh options] -- <command>
 #   gem-types coverage  <file.rbs> <calls file>
 #
@@ -24,6 +25,7 @@ ENV["BUNDLE_GEMFILE"] = File.expand_path("../Gemfile", __dir__)
 require "bundler/setup"
 require "optparse"
 require "json"
+require "yaml"
 require_relative "../lib/gem_types"
 
 # The scripts run the gem's own code and environment, so they must not
@@ -53,7 +55,8 @@ def load_config(workdir, opts)
     test_dirs: opts[:tests] || saved[:test_dirs] || %w[test spec],
     ns: ns,
     requires: opts[:requires] || saved[:requires] || [ns.first.gsub("::", "/").gsub(/([a-z\d])([A-Z])/, '\1_\2').downcase],
-    test_cmd: opts[:test_cmd] || saved[:test_cmd],
+    test_cmd: opts[:test_cmd] || saved[:test_cmd] ||
+              (File.read(File.join(workdir, "test_cmd")).strip if File.exist?(File.join(workdir, "test_cmd"))),
     env: env.transform_keys(&:to_s),
     out: File.join(File.expand_path(workdir), "evidence")
   )
@@ -130,6 +133,38 @@ when "exists"
   cfg = load_config(opts[:workdir], opts)
   sig = opts[:sig] or abort "--sig is required"
   exit GemTypes::Verify.exists(cfg, sig)
+when "verify"
+  opts = parse(ARGV)
+  cfg = load_config(opts[:workdir], opts)
+  sig = opts[:sig] or abort "--sig is required"
+  sigdir = File.directory?(sig) ? sig : File.dirname(sig)
+  libs = opts[:library] || begin
+    m = File.join(sigdir, "manifest.yaml")
+    File.exist?(m) ? (YAML.load_file(m)["dependencies"] || []).map { _1["name"] } : []
+  end
+  rbs_files = GemTypes::Verify.sig_files(sig)
+  puts "== exists"
+  exists = GemTypes::Verify.exists(cfg, sig)
+  puts "", "== steep"
+  steep = GemTypes::Verify.steep(cfg, sig, libs)
+  puts "", "== test suite (plain, then with runtime type checking)"
+  r = GemTypes::Verify.suite(cfg, sig)
+  p_, c = r[:plain], r[:checked]
+  puts "plain:   #{p_[:total]} #{p_[:unit]}, #{p_[:failed]} failing"
+  puts "checked: #{c[:total]} #{c[:unit]}, #{c[:failed]} failing, #{r[:checks]} type checks, #{r[:errors].size} distinct type errors"
+  puts "  (more failures with checking than without are tool artifacts or type errors; see docs/verification.md)" if c[:failed] > p_[:failed]
+  r[:errors].first(20).each { |e| puts "  #{e[0, 220]}" }
+  puts "  errors: #{r[:errors_file]}" unless r[:errors].empty?
+  declared = rbs_files.sum { |f| GemTypes::RbsReader.read_files([f]).methods.size }
+  puts "", "== Verification section for the PR (edit the last line to explain any remaining type errors)", ""
+  puts "## Verification", ""
+  puts "- `bin/test` and RuboCop pass."
+  puts "- Reviewed the signatures against the gem source; every declared method, class and module exists in the loaded gem." if exists.zero?
+  puts "- Called every declared method with runtime type checking (`rbs/test/setup`)."
+  tail = r[:errors].empty? ? "no type errors" : "#{r[:errors].size} distinct type errors (explain)"
+  puts "- Ran the gem's own test suite with runtime type checking: #{p_[:total]} #{p_[:unit]}, #{r[:checks]} type checks, #{tail}."
+  puts "", "(#{declared} declarations; run your call-every-method script with `gem-types check -c` and `gem-types coverage` before keeping the third line)"
+  exit(exists.zero? && steep.zero? && r[:errors].empty? ? 0 : 1)
 when "steep"
   opts = parse(ARGV)
   cfg = load_config(opts[:workdir], opts)

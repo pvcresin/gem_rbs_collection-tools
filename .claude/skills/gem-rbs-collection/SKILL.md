@@ -54,8 +54,10 @@ Priority, in order:
 $TOOLS/exe/gem-types pick <repo checkout> --top 500 --limit 30 [--min-months 24]
 ```
 
-It reads the bestgems.org ranking and rubygems.org, skips gems bundled with
-`rbs` (`stdlib/`) and gems that ship their own `sig/`. Without
+It reads the bestgems.org ranking and rubygems.org and skips gems that
+already have types: any `.rbs` file in the gem package (usually `sig/`), or
+RBS bundled with `rbs` (`stdlib/`). It also skips gems with an open PR in
+ruby/gem_rbs_collection. Untyped gems are the priority. Without
 `--min-months` it sorts by staleness, which puts long-abandoned gems first;
 `--min-months 24` keeps "stable for 2+ years" and orders by downloads, which
 is usually the better list. Also skip gems that are effectively dead or
@@ -66,10 +68,11 @@ whose API is mostly C extension or metaprogramming; say why.
 For each gem (details: `docs/evidence.md`):
 
 1. `gem-types prepare <gem> [version] <workdir>`: unpacks the gem, clones
-   upstream at the release tag, and writes a Gemfile from the package's
-   dependencies plus rbs, rbs-trace and lumitrace. Install it and make the
-   test suite pass *without* any tooling first (add test gems if needed).
-2. `gem-types collect --workdir W --ns Foo --test-cmd '<how the repo runs its tests>'`
+   upstream at the release tag, writes a Gemfile from the package's
+   dependencies and the repo's Gemfile (plus rbs, rbs-trace, lumitrace), and
+   guesses the test command (saved to `<workdir>/test_cmd`). Install it and
+   make the test suite pass *without* any tooling first.
+2. `gem-types collect --workdir W --ns Foo [--test-cmd '<command>']`
    runs eight sources: TracePoint, rbs-trace and Lumitrace while the tests
    run; TypeProf, tyda and Rigor (if Ruby 4.0 is set up, see
    docs/evidence.md) over lib + tests; YARD docs via Sord (the documented
@@ -119,6 +122,11 @@ name parameters properly, and decide unions.
 
 ## 4. Verify
 
+`gem-types verify --workdir W --sig gems/<gem>/<ver>/<gem>.rbs` runs the
+existence check, Steep, and the gem's test suite with and without runtime
+type checking, and prints a Verification section for the PR with the
+numbers. The steps it covers, plus the ones it does not:
+
 1. Static: `bin/test gems/<gem>/<version>` and `bundle exec rubocop gems/<gem>`.
 2. Against the gem itself: `gem-types exists --workdir W --sig <rbs>` (every
    declared method, class kind and superclass exists) and
@@ -151,7 +159,13 @@ name parameters properly, and decide unions.
 - Amend with `git commit --amend --no-edit`; push with
   `git push --force-with-lease=<branch>:<old full sha> origin <branch>`
   after checking the remote still has the old sha.
-- No PR template. Add a short verification section to the PR body:
+- Opening PRs: a cloud session holding the fork cannot open upstream PRs;
+  start a session with ruby/gem_rbs_collection as its source and give it
+  the branches, titles (commit subjects) and bodies. That session will
+  refuse to merge on a request relayed from another session; merging is
+  the user's call (they comment `/merge` or ask that session directly).
+- No PR template. Add a short verification section to the PR body
+  (`gem-types verify` prints one):
 
 ```
 ## Verification
