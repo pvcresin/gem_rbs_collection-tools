@@ -193,6 +193,14 @@ name parameters properly, and decide unions.
   Leave out methods where every call reaches the reference (ipaddress
   Prefix#+, IPv4#split); keep ones with a working path and say so in a
   comment. `verify` lints for direct references; follow the callers too.
+- Put the RBS under the gem that ships the code: database_cleaner only
+  requires the adapter, the API is in database_cleaner-core
+  (gems/database_cleaner-core). Check the package's lib/, not the repo.
+- A gem on an older major of a dependency the collection types for a newer
+  major (faraday_middleware on Faraday 1.x, gems/faraday is 2.x): declare
+  the few old-only classes it needs (Faraday::Response::Middleware) in
+  its own file and say so. `verify`/`live` load the dependency's RBS from
+  the collection automatically.
 - Reader-like `[]` that indexes an Array: out of range gives nil, so
   `-> T?` (ipaddress IPv4#[]).
 

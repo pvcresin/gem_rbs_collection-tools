@@ -180,7 +180,8 @@ module GemTypes
       checked_log = File.join(config.out, "suite-checked.log")
       calls = "#{prefix}.calls"
       FileUtils.rm_f(calls)
-      src.sh(config.env, "#{check.shellescape} -s #{sigdir.shellescape} -t #{targets.shellescape} -d #{double} " \
+      deps = dep_sig_args(config, sig)
+      src.sh(config.env, "#{check.shellescape} -s #{sigdir.shellescape}#{deps} -t #{targets.shellescape} -d #{double} " \
                          "-o #{prefix.shellescape} -c #{calls.shellescape} -- bash -c #{config.test_cmd.shellescape}",
              chdir: config.repo, log: checked_log)
       plain = test_counts(File.read(plain_log, encoding: "UTF-8"))
@@ -243,7 +244,7 @@ module GemTypes
       double = cmd.include?("rspec") ? "rspec" : "minitest"
       only = rbs_all.methods.keys.select { |k| reopened.include?(GemTypes.split_key(k).first) }
       env = only.empty? ? config.env : config.env.merge("RBS_TEST_ONLY_METHODS" => only.join(","))
-      src.sh(env, "#{check.shellescape} -s #{File.join(dir, 'sig').shellescape} -t #{targets.shellescape} " \
+      src.sh(env, "#{check.shellescape} -s #{File.join(dir, 'sig').shellescape}#{dep_sig_args(config, sig)} -t #{targets.shellescape} " \
                          "-d #{double} -o #{prefix.shellescape} -- bash -c #{cmd.shellescape}",
              chdir: config.repo, log: File.join(dir, "run.log"))
       failed = File.exist?("#{prefix}.errors.tsv") ? File.readlines("#{prefix}.errors.tsv", encoding: "UTF-8").filter_map { |l| l[/\t\[(.+?)\] \w+Error/, 1] }.uniq : []
@@ -443,6 +444,33 @@ module GemTypes
         total += $1.to_i; failed += $2.to_i + $3.to_i; unit ||= "runs"
       end
       { total: total, failed: failed, unit: unit || "tests" }
+    end
+
+    # " -s <dir>" for the RBS of the gem's runtime dependencies that the
+    # collection has (gems/<dep>/<version>, the newest version allowed by
+    # the dependency, else the newest), so signatures can refer to them
+    # (faraday_middleware's classes inherit from Faraday::Middleware).
+    def dep_sig_args(config, sig)
+      gems_dir = File.expand_path(sig).split(File::SEPARATOR).then do |parts|
+        i = parts.rindex("gems") or return ""
+        parts[0..i].join(File::SEPARATOR)
+      end
+      pkg = Dir[File.join(File.dirname(config.out), "*.gem")].first or return ""
+      require "rubygems/package"
+      spec = Gem::Package.new(pkg).spec
+      own = File.expand_path(File.directory?(sig) ? sig : File.dirname(sig))
+      spec.runtime_dependencies.filter_map do |dep|
+        versions = Dir[File.join(gems_dir, dep.name, "*")].select { |d| File.directory?(d) && File.basename(d).match?(/\A\d/) }
+        next if versions.empty?
+
+        sorted = versions.sort_by { |d| Gem::Version.new(File.basename(d)) }
+        best = sorted.reverse.find { |d| dep.requirement.satisfied_by?(Gem::Version.new("#{File.basename(d)}.0")) } || sorted.last
+        next if File.expand_path(best) == own
+
+        " -s #{best.shellescape}"
+      end.join
+    rescue StandardError
+      ""
     end
 
     def sig_files(sig)
