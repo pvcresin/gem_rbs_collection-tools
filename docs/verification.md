@@ -101,6 +101,17 @@ cd <clone> && GEM_HOME=$W/gemhome GEM_PATH=$W/gemhome BUNDLE_GEMFILE=… \
   `Integer`). Tests rarely cover every accepted type; check each line
   against the source and keep what the code really accepts.
 
+`rbs_check.sh` also loads `rbs_hook_fix.rb`, so classes or modules that
+define their own `method` (e.g. `XPath`, extended with `XPath::DSL`) can be
+checked; rbs/test otherwise fails at load time on them. `coverage` counts a
+module's instance method as called when it was called on a class or module
+that extends it (`extend Memoist`, `extend XPath::DSL`).
+
+Runtime checks only hook methods a class defines itself: a declaration that
+overrides an inherited method's type (e.g. `map` on a Hash subclass whose
+`each` yields values) is not checked at runtime. Check those with
+assertions on what the method yields and returns.
+
 Runs where the test command starts one Ruby process per test file are
 counted whole: every process appends to the result files, which
 `rbs_check.sh` clears first.

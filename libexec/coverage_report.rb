@@ -6,15 +6,18 @@
 # Declarations come from the RBS AST (def, alias, attr_*), so aliases count.
 # A call on a subclass covers the method declared on its ancestor.
 # An instance #initialize counts as covered when .new was called.
+# A module's instance method counts when called on something that extends it.
 require "rbs"; require "set"
 file, trace = ARGV
 _, _, decls = RBS::Parser.parse_signature(File.read(file))
 declared = []
+modules = Set.new
 walk = lambda do |decl, ns|
   case decl
   when RBS::AST::Declarations::Class, RBS::AST::Declarations::Module
     name = decl.name.to_s.delete_prefix("::")
     full = (ns.empty? || decl.name.absolute?) ? name : "#{ns}::#{name}"
+    modules << full if decl.is_a?(RBS::AST::Declarations::Module)
     vis = :public
     decl.members.each do |m|
       case m
@@ -47,6 +50,8 @@ sub = ->(c, cls) { c == cls || anc[c].include?(cls) }
 missing = declared.reject do |cls, k, m, v|
   mm = (k == :self && m == "initialize") ? m : m
   calls[[k, mm]].any? { |c| sub.(c, cls) } ||
+    # A module's instance method called on a class or module that extends it.
+    (k == :inst && modules.include?(cls) && calls[[:self, m]].any? { |c| sub.(c, cls) }) ||
     (k == :inst && m == "initialize" && calls[[:self, "new"]].any? { |c| sub.(c, cls) })
 end
 STDERR.puts "declared=#{declared.size} missing=#{missing.size}"
