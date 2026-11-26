@@ -363,9 +363,10 @@ module GemTypes
     # Parameters declared as Hash[K, V] / Array[T] with concrete type
     # arguments that the test suite passed a subclass of Hash/Array to
     # (faraday_middleware's Chunked#chunked_encoding? gets a
-    # Faraday::Utils::Headers < Hash[Symbol | String, untyped]). Generic
-    # classes are invariant in RBS, so the declaration may reject the gem's
-    # own value: use the subclass, an interface, or untyped arguments.
+    # Faraday::Utils::Headers < Hash[Symbol | String, untyped]). The
+    # subclass itself is not the problem: type arguments are invariant, so
+    # the arguments it inherits must match the declared ones exactly. Use
+    # untyped arguments or an interface when the method only reads.
     # Returns [[key, slot, message], ...].
     def invariant_params(config, sig)
       tp = Sources.for("tracepoint", config)
@@ -400,7 +401,7 @@ module GemTypes
                 base = g.name.to_s.delete_prefix("::")
                 next if head == base || !(anc[head] || core_ancestors(head) || []).include?(base)
 
-                out << [key, slot_label(slot, e), "the tests passed a #{head} (a #{base} subclass); #{g} is invariant and may reject it"]
+                out << [key, slot_label(slot, e), "the tests passed a #{head} (a #{base} subclass); its #{base} type arguments must match #{g} exactly (invariant)"]
               end
             end
           end

@@ -201,11 +201,14 @@ name parameters properly, and decide unions.
   the few old-only classes it needs (Faraday::Response::Middleware) in
   its own file and say so. `verify`/`live` load the dependency's RBS from
   the collection automatically.
-- Generics are invariant: a parameter declared `Hash[String, String]`
-  rejects `Faraday::Utils::Headers < Hash[Symbol | String, untyped]`.
-  When the method only reads, use `Hash[untyped, untyped]` or an
-  interface. `verify` flags parameters the tests passed a Hash/Array
-  subclass to.
+- Generic type arguments are invariant. A subclass is fine as such, but
+  `Faraday::Utils::Headers < Hash[Symbol | String, untyped]` does not
+  match a parameter declared `Hash[String, String]`, because the type
+  arguments differ. Declaring the subclass (`Faraday::Utils::Headers`)
+  rejects plain Hashes; a union with `Hash[String, String]` still rejects
+  other key/value types. When the method only reads the Hash, use
+  `Hash[untyped, untyped]` or an interface. `verify` flags parameters the
+  tests passed a Hash/Array subclass to.
 - After widening a declaration, re-check what is built on it: coderay's
   TokensProxy#each forwards to #tokens, so widening #tokens to
   `Tokens | Array[Tokens]` also changed what #each yields.
