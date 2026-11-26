@@ -52,16 +52,24 @@ scripts, run from its checkout.
    a worktree on `add-<gem>` for each gem that got a draft, and writes
    `$SCRATCH/prN/workflow-args.json`. Fix a near miss by hand (see "Test
    suites that do not run" below) or drop it.
-3. (worktrees are already made by step 2)
+3. The draft's structure is already read from the source (parameters,
+   keywords, blocks and their arity, `[self:]`, `self?`, private mixin
+   methods, nil returns). Authors start with `gem-types lint --fix` and
+   `gem-types repair` (widens what the gem's own code or several test
+   files show is too narrow; a "test-only, review" list for the rest), so
+   their time goes to judging types, not structure. `pick --improve`
+   lists gems already in the collection to improve (`update-<gem>`
+   branches; keep old version directories).
 4. Run the saved workflow `gem-rbs-author` (in `.claude/workflows/`, needs
    the user's opt-in to multi-agent work) with the contents of
    `workflow-args.json` as its args: one
    author agent per gem writes and verifies the RBS, then an independent
    reviewer who sees only the RBS and the gem tries to falsify it. Without
    workflows, start the same two prompts as background subagents.
-5. Review every RBS yourself against the source (the reviewers have missed
-   nothing so far, but authors have: e.g. a Hash subclass whose `each`
-   yields values). Fix, rerun `bin/test`, RuboCop and `gem-types live`.
+5. Review every RBS yourself against the source, and run the independent
+   review workflow (`gem-rbs-review`) again after your fixes: a second
+   round has found wrong declarations the first one did not (rake's
+   private DSL methods, thor's create_file). Fix, rerun `bin/test`, RuboCop and `gem-types live`.
 6. `gem-types pr-text --workdir W --sig <rbs>` drafts the commit message
    from the RBS, the source (public methods left out) and the saved
    `verify`/`live` results; edit the bullets into prose. Commit as pvcresin

@@ -59,7 +59,7 @@ const authorPrompt = x => `Write accurate, verified RBS for the Ruby gem "${x.ge
 
 Read first: ${T}/.claude/skills/gem-rbs-collection/SKILL.md (sections 3-4 and "Type patterns"), ${T}/docs/evidence.md, ${T}/docs/verification.md.
 
-Setup done: workdir W=${x.workdir} (repo/ = upstream at the release tag, pkg/ = packaged gem, env/Gemfile + gemhome/ = test environment, draft.rbs + report.md = evidence; the draft is evidence, not the answer). Test command: ${x.test_cmd || '(W/test_cmd)'}. Run Ruby as: cd W/repo && ${env(x)} bundle exec ruby -Ilib ...
+Setup done: workdir W=${x.workdir} (repo/ = upstream at the release tag, pkg/ = packaged gem, env/Gemfile + gemhome/ = test environment, draft.rbs + report.md = evidence). The draft's structure (parameters, keywords, blocks and their arity, [self:], self?, private mixin methods, nil returns) is already read from the source - "| structure:" comments say what was corrected; its types come from runtime and static evidence and need judging. Test command: ${x.test_cmd || '(W/test_cmd)'}. Run Ruby as: cd W/repo && ${env(x)} bundle exec ruby -Ilib ...
 ${x.notes ? 'Notes: ' + x.notes : ''}
 ${x.from ? improveText(x) : ''}
 Output: only inside ${x.worktree}/gems/${x.gem}/ (a change to any file outside gems/, .gitmodules included, makes the PR need an admin): ${x.ver}/${x.gem}.rbs, ${x.ver}/_test/test.rb (+ _test/test.rbs if needed), .rubocop.yml (copy gems/netrc/.rubocop.yml), manifest.yaml only for stdlib deps. No _reviewers.yaml. Do not commit, push or touch GitHub. Never execute code from the worktree's gems/ except via bin/test.
@@ -71,7 +71,7 @@ Test style (_test/test.rb): no bin/init_new_gem header comment; pin the return t
 Rules: when you change a declaration, re-check every declared method that forwards to it or returns its result; type the public API; leave out internals and @api private and say what; calls that only raise in the gem's tests stay rejected; no -> bot overloads for errors; read every branch (other platforms, error paths, early returns inside blocks); proper parameter names.
 
 Verify, all required (T=${T}/exe/gem-types):
-0. $T lint --workdir W --sig ${sigdir(x)}: no unexplained findings.
+0. $T lint --workdir W --sig ${sigdir(x)} --fix applies the mechanical fixes (optional blocks, self?, private mixin methods, explicit nil, defaults, manifest); judge what it leaves. Then $T repair --workdir W --sig ${sigdir(x)} [--test-cmd "<ruby cmd for call_all.rb>"] widens the slots the gem's own code or several test files show are too narrow; check each applied change against the source (revert any that only a misusing test needs) and decide each entry of its "test-only, review" list from the source, applying only those real callers rely on. Rerun lint until no unexplained findings.
 1. cd ${x.worktree} && bin/test gems/${x.gem}/${x.ver}; bundle exec rubocop gems/${x.gem}
 2. $T exists --workdir W --sig ${sigdir(x)}/${x.gem}.rbs and $T verify (same args). Triage every type error, uncalled method and "possibly too wide" line against the source.
 3. A script W/scripts/call_all.rb that calls every declared method (every overload, nil/edge paths). Run it under $T check -s ${sigdir(x)} -t "${x.ns}" -c W/calls.txt -- <ruby cmd>, then $T coverage ${sigdir(x)}/${x.gem}.rbs W/calls.txt until nothing is missing.
