@@ -198,4 +198,52 @@ class LintTest < Minitest::Test
       assert_finds(/uses Logger \(logger\)/, found)
     end
   end
+
+  def test_rest_args_with_a_default_are_optional
+    found = lint(<<~RUBY, <<~RBS)
+      class A
+        def create_file(dest, *args, &block)
+          config = args.last.is_a?(Hash) ? args.pop : {}
+          data = args.first
+          [dest, block || data.to_s, config]
+        end
+        def insert(dest, *args, &block)
+          data = block_given? ? block : args.shift
+          config = args.shift || {}
+          [dest, data, config]
+        end
+      end
+    RUBY
+      class A
+        def create_file: (String dest, String data) -> untyped
+                       | (String dest) { () -> String } -> untyped
+        def insert: (String dest, String data) -> untyped
+                  | (String dest) { () -> String } -> untyped
+      end
+    RBS
+    assert_finds(/A#create_file: without a block, every overload requires 2/, found)
+    refute(found.any? { _1.start_with?("A#insert:") }, found.inspect)
+  end
+
+  def test_privatized_mixin_methods
+    Dir.mktmpdir do |dir|
+      File.write(File.join(dir, "a.rb"), <<~RUBY)
+        module Tools
+          def run(x) = x
+        end
+        module A
+          include Tools
+          private(*Tools.instance_methods(false))
+        end
+      RUBY
+      sig = File.join(dir, "a.rbs")
+      File.write(sig, "module Tools\n  def run: (String x) -> String\nend\nmodule A\n  include Tools\nend\n")
+      cfg = Struct.new(:ns, :lib_paths) { def in_ns?(k) = ns.any? { |n| k.start_with?(n) } }.new(%w[A Tools], [dir])
+      found = GemTypes::Lint.run(cfg, GemTypes::Verify.parse_sigs(sig), GemTypes::DefIndex.new([dir])).map { |k, m| "#{k}: #{m}" }
+      assert_finds(/A: makes Tools's methods private .* run public/, found)
+      File.write(sig, "module Tools\n  def run: (String x) -> String\nend\nmodule A\n  include Tools\n  private\n  def run: (String x) -> String\nend\n")
+      found = GemTypes::Lint.run(cfg, GemTypes::Verify.parse_sigs(sig), GemTypes::DefIndex.new([dir])).map { |k, m| "#{k}: #{m}" }
+      refute(found.any? { _1.include?("makes Tools") }, found.inspect)
+    end
+  end
 end

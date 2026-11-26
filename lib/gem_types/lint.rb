@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "rbs"
+require "prism"
 require "yaml"
 
 module GemTypes
@@ -66,6 +67,7 @@ module GemTypes
         end
       end
       d[:consts].each { |c| out.concat(const_lint(c)) }
+      out.concat(privatized_mixins(config, d, parsed))
       own_src = nil
       d[:classes].each do |c|
         next unless c[:empty] && config.respond_to?(:in_ns?) && !config.in_ns?("#{c[:name]}#x")
@@ -144,6 +146,69 @@ module GemTypes
       end
     end
 
+    # `private(*FileUtils.instance_methods(false))` in a module body (Rake::DSL):
+    # the module's includers get those methods as private, but an RBS
+    # `include` keeps them public unless the module redeclares them under
+    # `private`. Returns findings for each such module whose RBS does not.
+    def privatized_mixins(config, d, parsed)
+      dirs = config.respond_to?(:lib_paths) ? Array(config.lib_paths) : []
+      found = []
+      dirs.flat_map { |dir| Dir[File.join(dir, "**/*.rb")] }.select { File.file?(_1) }.each do |file|
+        walk_private(Prism.parse_file(file).value, [], found)
+      end
+      return [] if found.empty?
+
+      private_keys = {}
+      parsed.each do |_, decls|
+        decls.each { |dd| collect_private(dd, [], private_keys) }
+      end
+      found.uniq.filter_map do |mod, src_mod|
+        next unless d[:classes].any? { |c| c[:name] == mod }
+
+        declared = d[:methods].select { |x| x.key.start_with?("#{src_mod}#") || x.key.start_with?("#{src_mod.split('::').last}#") }
+                              .map { |x| x.key.split("#").last }.uniq
+        missing = declared.reject { |n| private_keys["#{mod}##{n}"] }
+        next if missing.empty?
+
+        [mod, "makes #{src_mod}'s methods private (private(*#{src_mod}.instance_methods)), but the RBS leaves #{missing.first(6).join(', ')}#{missing.size > 6 ? ', ...' : ''} public through include: redeclare them under `private` in #{mod}"]
+      end
+    end
+
+    def walk_private(node, ns, found)
+      case node
+      when Prism::ModuleNode, Prism::ClassNode
+        inner = ns + [node.constant_path.slice]
+        node.body&.compact_child_nodes&.each { |c| walk_private(c, inner, found) }
+        return
+      when Prism::CallNode
+        if node.receiver.nil? && node.name == :private && !ns.empty?
+          (node.arguments&.arguments || []).each do |a|
+            e = a.is_a?(Prism::SplatNode) ? a.expression : nil
+            if e.is_a?(Prism::CallNode) && %i[instance_methods public_instance_methods].include?(e.name) && e.receiver
+              found << [ns.join("::"), e.receiver.slice.delete_prefix("::")]
+            end
+          end
+        end
+      end
+      node.compact_child_nodes.each { |c| walk_private(c, ns, found) }
+    end
+
+    def collect_private(decl, ns, out)
+      return unless decl.is_a?(RBS::AST::Declarations::Class) || decl.is_a?(RBS::AST::Declarations::Module)
+
+      full = (ns + [decl.name.to_s.delete_prefix("::")]).join("::")
+      section = :public
+      decl.members.each do |m|
+        case m
+        when RBS::AST::Members::Private then section = :private
+        when RBS::AST::Members::Public then section = :public
+        when RBS::AST::Members::MethodDefinition
+          out["#{full}##{m.name}"] = true if m.kind == :instance && (m.visibility || section) == :private
+        when RBS::AST::Declarations::Base then collect_private(m, full.split("::"), out)
+        end
+      end
+    end
+
     def const_lint(c)
       t = c[:type]
       out = []
@@ -218,9 +283,27 @@ module GemTypes
       req = ps.count { |p| p[:kind] == "req" }
       opt = ps.count { |p| p[:kind] == "opt" }
       rest = ps.any? { |p| p[:kind] == "rest" }
-      min = fns.map { |f| f.required_positionals.size + f.trailing_positionals.size }.min
-      if min > req && opt.positive?
-        out << [m.key, "every overload requires #{min} positional argument#{min == 1 ? '' : 's'} but the source requires #{req} (the others have defaults): add `?` or an overload"]
+      # Per block form: thor's create_file(dest, *args) needed data in every
+      # blockless overload, though `args.first` makes it optional.
+      need = ->(f) { f.required_positionals.size + f.trailing_positionals.size }
+      groups = m.overloads.select { |mt| mt.type.is_a?(RBS::Types::Function) }.group_by { |mt| !mt.block.nil? }
+      # *args counts as optional only where the source gives the missing
+      # value a default (`data = args.first ... data.to_s`, `args.first || x`);
+      # `data = args.shift` passed on as nil is still required.
+      rest_default = rest && rest_default?(src, ps.find { |p| p[:kind] == "rest" }[:name])
+      # A default may be an alternative to the block (`def builds(proc = nil,
+      # &block)`): those are judged over all overloads. Per block form only
+      # for *args with a default.
+      groups = { nil => groups.values.flatten } unless rest_default
+      if opt.positive? || rest_default
+        groups.each do |with_block, mts|
+          min = mts.map { |mt| need.(mt.type) }.min
+          next unless min > req
+
+          form = groups.size > 1 && !with_block.nil? ? (with_block ? "with a block, every overload" : "without a block, every overload") : "every overload"
+          why = opt.positive? ? "the others have defaults" : "the value read from *args gets a default"
+          out << [m.key, "#{form} requires #{min} positional argument#{min == 1 ? '' : 's'} but the source requires #{req} (#{why}): add `?` or an overload"]
+        end
       end
       unless rest || fns.any?(&:rest_positionals)
         max = fns.map { |f| f.required_positionals.size + f.optional_positionals.size + f.trailing_positionals.size }.max
@@ -237,6 +320,20 @@ module GemTypes
         end
       end
       out
+    end
+
+    def rest_default?(src, name)
+      return false unless src[:file] && File.file?(src[:file])
+
+      body = File.readlines(src[:file], encoding: "UTF-8")[(src[:line] - 1)...src[:end_line]].join
+      n = Regexp.escape(name)
+      # The first value read from *args (the first missing positional);
+      # later reads (`config = args.shift || {}`) are other parameters.
+      line = body.lines.find { |l| l.match?(/\b#{n}(?:\.first|\.shift|\[0\])/) } or return false
+      return true if line.match?(/\b#{n}(?:\.first|\.shift|\[0\])\s*(?:\|\||\.to_s\b|\.to_a\b|\.to_sym\b)/)
+
+      var = line[/(\w+)\s*=\s*(?:[^=\n]*\?[^:\n]*:\s*)?#{n}(?:\.first|\.shift|\[0\])/, 1] or return false
+      body.match?(/\b#{Regexp.escape(var)}(?:\.to_s\b|\.to_a\b|\s*\|\|(?!=))/)
     end
 
     # A body that can end in nil (`return`, `if` without else, a `nil`
