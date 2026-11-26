@@ -410,7 +410,23 @@ module GemTypes
         rescue StandardError, NameError
           false
         end
-        names = names.uniq.select { |n| in_lib.(n) }.reject { |n| shared.(n) }
+        # A module whose constant a dependency defined first (mime-types-data
+        # defines MIME::Types::Data before mime-types loads) is still the
+        # gem's when the gem's lib defines its methods.
+        own_methods = lambda do |n|
+          mod = Object.const_get(n)
+          next false unless mod.is_a?(Module)
+
+          # Most of its methods, not a few added to a library module
+          # (rake's FileUtils#sh, httparty's Net::HTTPHeader additions).
+          locs = (mod.instance_methods(false) + mod.private_instance_methods(false)).map { |m| mod.instance_method(m).source_location } +
+                 mod.singleton_methods(false).map { |m| mod.method(m).source_location }
+          mine = locs.count { |l| l.to_a.first.to_s.start_with?(lib) }
+          mine.positive? && mine * 2 >= locs.size
+        rescue StandardError, NameError
+          false
+        end
+        names = names.uniq.select { |n| in_lib.(n) || own_methods.(n) }.reject { |n| shared.(n) && !own_methods.(n) }
         puts names.reject { |n| names.any? { |o| n.start_with?("\#{o}::") } }
       RUBY
     end
