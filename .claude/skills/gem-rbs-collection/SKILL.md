@@ -330,7 +330,12 @@ itself must validate with its dependencies.
 `gem-types lint --workdir W --sig gems/<gem>/<ver>` first: the static
 checks of "Pitfalls from the collection's history" plus the test style,
 manifest and .rubocop.yml rules CI enforces, in seconds. `verify` runs it
-too.
+too. `lint --fix` applies the mechanical fixes in place (`?{` for a guarded
+block, an Enumerator overload for to_enum, `def self?.` for
+module_function, boolish/bool/String for literals, `?` for a defaulted
+positional or an explicit nil return, private redeclarations, manifest
+entries), keeps the file parseable, and lists what still needs you; review
+its diff like any other edit.
 
 Trust `verify`'s exit status: 0 only when exists, Steep and a complete
 checked test run all pass. If it prints `CHECKED RUN INCOMPLETE`, fix the

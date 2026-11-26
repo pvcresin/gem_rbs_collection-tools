@@ -18,8 +18,9 @@
 #                       (which declarations the runtime checks really cover: every return type made `bot`)
 #   gem-types pr-text   --workdir W --sig path/to/foo.rbs   (commit message / PR body draft from the RBS,
 #                       the source and the saved verify/live results)
-#   gem-types lint      --workdir W --sig path/to/foo.rbs   (static checks only: blocks, arity, nil,
-#                       literals, protocol methods, manifest, test style; seconds)
+#   gem-types lint      --workdir W --sig path/to/foo.rbs [--fix]   (static checks only: blocks, arity,
+#                       nil, literals, protocol methods, manifest, test style; seconds. --fix edits the
+#                       RBS and manifest.yaml where the fix is mechanical, then lists what is left)
 #   gem-types update    --workdir W --sig path/to/foo.rbs [--from OLD_VERSION] [--library json,uri]
 #                       (existing RBS vs a new version: source changes, gone/missing methods, steep, tests)
 #   gem-types check     [rbs_check.sh options] -- <command>
@@ -296,6 +297,8 @@ when "live"
   exit(r[:unchecked].empty? ? 0 : 1)
 when "lint"
   # The static checks alone (seconds, nothing runs): use it while writing.
+  # --fix applies the mechanical fixes to the RBS files and manifest.yaml.
+  fix = !ARGV.delete("--fix").nil?
   opts = parse(ARGV)
   cfg = load_config(opts[:workdir], opts)
   sig = File.expand_path(opts[:sig] || abort("--sig is required"))
@@ -305,6 +308,18 @@ when "lint"
     exit GemTypes::Verify.sig_error(e)
   end
   lint = GemTypes::Verify.lint(cfg, sig)
+  if fix
+    res = GemTypes::Lint.apply_fixes(lint)
+    puts "== fixed (#{res[:applied].size})"
+    res[:applied].each do |f, edits|
+      puts "#{f.key}: #{f.message}"
+      edits.each { |e| puts "    #{e}" }
+    end
+    res[:failed].each { |f, why| puts "not fixed: #{f.key}: #{why}" }
+    # What is left, from the files as they are now.
+    lint = GemTypes::Verify.lint(cfg, sig)
+    puts "", "== still needs a human (#{lint.size})"
+  end
   puts "nothing" if lint.empty?
   lint.each { |key, msg| puts "#{key}: #{msg}" }
   text = GemTypes::RbsReader.sig_files(sig).map { |f| File.read(f, encoding: "UTF-8") }.join("\n")
