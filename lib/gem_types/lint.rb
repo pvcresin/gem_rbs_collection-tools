@@ -811,6 +811,9 @@ module GemTypes
         keys = (YAML.safe_load(rc) || {}).keys rescue []
         bad = keys.reject { |k| k == "inherit_from" || k.start_with?("RBS") }
         out << [".rubocop.yml", "only inherit_from and RBS* keys are allowed (#{bad.join(', ')})"] unless bad.empty?
+        if rc.match?(/^\s*Exclude:/)
+          out << [".rubocop.yml", "has Exclude entries: autocorrect the old version directory (rubocop -a) instead of excluding it"]
+        end
       else
         out << [".rubocop.yml", "missing: copy it from bin/init_new_gem's template"]
       end
