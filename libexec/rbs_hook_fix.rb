@@ -45,4 +45,47 @@ if defined?(RBS::Test::Hook)
     end
     RBS::Test::Hook.singleton_class.prepend(RBSHookOnlyMethods)
   end
+
+  # rbs/test installs hooks when a class or module body ends (`:end`).
+  # Methods a gem adds to an existing class without reopening it - a
+  # top-level `def IPAddress` (a private Object method), `String.class_eval`
+  # or `define_method` - never get hooked. Watch method additions on the
+  # targets that already exist and install the tester for them then.
+  if (tester = $gem_types_rbs_tester)
+    sample_size = get_sample_size(ENV["RBS_TEST_SAMPLE_SIZE"] || "") rescue nil
+    unchecked = (ENV["RBS_TEST_UNCHECKED_CLASSES"] || "").split(",").map(&:strip)
+    unchecked.push(*to_double_class(ENV["RBS_TEST_DOUBLE_SUITE"])) rescue nil
+    targets = (ENV["RBS_TEST_TARGET"] || "").split(",").map(&:strip).reject { |t| t.end_with?("*") || t.empty? }
+    targets.each do |name|
+      klass = (Object.const_get(name) rescue nil)
+      next unless klass.is_a?(Module)
+      next unless tester.env.module_name?(RBS::TypeName.parse("::#{name}"))
+
+      watcher = Module.new do
+        define_method(:method_added) do |m|
+          super(m)
+          next unless equal?(klass) && !Thread.current[:gem_types_installing]
+
+          begin
+            Thread.current[:gem_types_installing] = true
+            tester.install!(klass, sample_size: sample_size, unchecked_classes: unchecked)
+          ensure
+            Thread.current[:gem_types_installing] = false
+          end
+        end
+        define_method(:singleton_method_added) do |m|
+          super(m)
+          next unless equal?(klass) && !Thread.current[:gem_types_installing]
+
+          begin
+            Thread.current[:gem_types_installing] = true
+            tester.install!(klass, sample_size: sample_size, unchecked_classes: unchecked)
+          ensure
+            Thread.current[:gem_types_installing] = false
+          end
+        end
+      end
+      klass.singleton_class.prepend(watcher)
+    end
+  end
 end

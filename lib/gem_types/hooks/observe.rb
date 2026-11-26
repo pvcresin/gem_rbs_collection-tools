@@ -261,6 +261,9 @@ ObserveTypes::TP = TracePoint.new(:call, :return, :raise, :rescue, :b_call, :b_r
     # While an exception (or throw) unwinds the method, return_value is nil.
     rv = tp.return_value
     e = frame[:exc]
+    # Limitation: an exception rescued inside C code fires no :rescue event,
+    # so its mark can outlive it (Ruby 3.3's loop rescues StopIteration in
+    # Ruby and is fine). $! cannot tell: it is nil in TracePoint hooks.
     outcome = if e && nil.equal?(rv)
                 e.equal?(ObserveTypes::THROW) ? "throw" : "raise #{e.class}"
               else

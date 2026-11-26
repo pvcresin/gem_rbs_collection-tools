@@ -117,6 +117,11 @@ wrapping every core method (which made awesome_print's run hang). In the first f
 it found Struct accessors (not hooked), Enumerable methods inherited by a
 Hash subclass, and a method that ends in `exec`.
 
+rbs/test installs its hooks when a class body ends, so methods a gem adds
+to an existing class without reopening it (a top-level `def IPAddress`,
+`String.class_eval`, `define_method`) were never checked. `rbs_check.sh`
+now also installs the hooks when such a method is added to a target class.
+
 Runtime checks only hook methods a class defines itself: a declaration that
 overrides an inherited method's type (e.g. `map` on a Hash subclass whose
 `each` yields values) is not checked at runtime. Check those with
