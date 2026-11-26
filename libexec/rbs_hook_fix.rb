@@ -33,6 +33,9 @@ if defined?(RBS::Test::Hook)
       wrapper.define_singleton_method(:arity) { original.arity }
       wrapper.define_singleton_method(:parameters) { |*a, **k| original.parameters(*a, **k) }
       wrapper.define_singleton_method(:lambda?) { original.lambda? }
+      # eval("self", block.binding) (docile's fallback to the caller) must
+      # see the caller, not the object the wrapper was built in.
+      wrapper.define_singleton_method(:binding) { original.binding }
       wrapper
     end
   end
@@ -47,6 +50,12 @@ if defined?(RBS::Test::Hook)
                .sub("wrapped_block = Object.new.instance_exec do", "wrapped_block = ::Object.new.instance_exec do")
                .sub("      result = __send__(:\"#{without}\", *args, &wrapped_block)",
                     "      ::GemTypesBlockShape.copy(wrapped_block, #{blk})\n      result = __send__(:\"#{without}\", *args, &wrapped_block)")
+               # A DSL object that undefines equal?/instance_exec (factory_bot's
+               # DefinitionProxy) as the block's self: use BasicObject's.
+               .sub("block_result = if self.equal?(new_object)",
+                    "block_result = if ::BasicObject.instance_method(:equal?).bind_call(self, new_object)")
+               .sub("self.instance_exec(*block_args, &#{blk})",
+                    "::BasicObject.instance_method(:instance_exec).bind_call(self, *block_args, &#{blk})")
       # initialize: keep the object on a construction stack while it runs,
       # so a method it calls on itself before setting its state (mime-types
       # reads #simplified inside MIME::Type#initialize) is not reported
