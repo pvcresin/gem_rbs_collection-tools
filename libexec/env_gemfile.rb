@@ -26,6 +26,8 @@ end
 
 SKIP = /\A(rubocop.*|standard|guard.*|pry.*|byebug|debug|coveralls.*|codeclimate.*|ruby-prof|yard|yard-.*|rdoc|bundler|bake.*|covered|sus-fixtures-.*|rake-compiler|gem-release|overcommit|reek|flay|flog|panolint|mutant.*|simplecov.*|rubysl.*)\z/
 gemfile = %w[Gemfile gems.rb].map { File.join(repo, _1) }.find { File.file?(_1) }
+helper_requires = Dir[File.join(repo, "{spec,test}", "{spec_helper,helper,test_helper}.rb")]
+                  .flat_map { File.read(_1).scrub.scan(/^\s*require\s*\(?\s*["']([\w-]+)["']/).flatten }
 if gemfile
   extra = []
   # Blocks for other platforms (platforms :jruby, :rbx do ... end) are skipped.
@@ -52,7 +54,10 @@ if gemfile
       next unless mri.(pm[1].scan(/:(\w+)/).flatten)
     end
     name = m[1]
-    next if name == spec.name || names.include?(name) || name.match?(SKIP)
+    # A skipped tool the test helpers require (docile's spec_helper does
+    # `require "simplecov"`) is needed after all.
+    needed = name.match?(SKIP) && helper_requires.include?(name)
+    next if name == spec.name || names.include?(name) || (name.match?(SKIP) && !needed)
 
     # Conditional versions (RUBY_VERSION < '1.9' ? '~> 10.5' : '>= 10.5')
     # cannot be read without evaluating Ruby: take the gem unconstrained.

@@ -389,7 +389,7 @@ module GemTypes
 
           mod = Object.const_get(n)
           mod.is_a?(Module) && mod.constants(false).any? { |c| loc_of.(mod, c).start_with?(lib) }
-        rescue StandardError, NameError
+        rescue StandardError, NameError, LoadError
           false
         end
         names = (Object.constants - before_consts).map(&:to_s)
@@ -407,7 +407,7 @@ module GemTypes
             loc = loc_of.(mod, c)
             !loc.empty? && !loc.start_with?(lib) && !loc.match?(native)
           end
-        rescue StandardError, NameError
+        rescue StandardError, NameError, LoadError
           false
         end
         # A module whose constant a dependency defined first (mime-types-data
@@ -423,7 +423,7 @@ module GemTypes
                  mod.singleton_methods(false).map { |m| mod.method(m).source_location }
           mine = locs.count { |l| l.to_a.first.to_s.start_with?(lib) }
           mine.positive? && mine * 2 >= locs.size
-        rescue StandardError, NameError
+        rescue StandardError, NameError, LoadError
           false
         end
         names = names.uniq.select { |n| in_lib.(n) || own_methods.(n) }.reject { |n| shared.(n) && !own_methods.(n) }

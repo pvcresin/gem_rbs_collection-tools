@@ -16,7 +16,13 @@ each_file = ->(files) { "for t in #{files.sort.map(&:shellescape).join(' ')}; do
 cmds = []
 if (repo / "spec").directory?
   rspec = has.("rspec") || has.("rspec-core") || (repo / ".rspec").file?
-  if rspec
+  helpers = Dir.chdir(repo) { Dir["spec/{spec_helper,helper}.rb"] }.map { (repo / _1).read.scrub }.join("\n")
+  # minitest/spec under spec/ (launchy): the files run with ruby.
+  minitest_spec = helpers.match?(/require\s*\(?\s*["']minitest/) && !helpers.match?(/require\s*\(?\s*["']rspec/)
+  specs = Dir.chdir(repo) { Dir["spec/**/*_spec.rb"] }
+  if minitest_spec && !specs.empty?
+    cmds << each_file.(specs).sub("-Itest", "-Ispec")
+  elsif rspec
     cmds << "bundle exec rspec"
   elsif rake_task.("spec")
     # spec/ without RSpec (bacon, minitest/spec, ...): the Rakefile knows.
