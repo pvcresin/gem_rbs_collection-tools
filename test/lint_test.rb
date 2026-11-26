@@ -545,4 +545,27 @@ class LintTest < Minitest::Test
     RBS
     assert_equal [], found
   end
+
+  def test_super_passes_the_block_to_a_parent_that_takes_one
+    found = lint(<<~RUBY, <<~RBS)
+      class A
+        def initialize(h = {})
+          yield self if block_given?
+        end
+      end
+      class B < A
+        def initialize(h = nil)
+          super({})
+        end
+      end
+    RUBY
+      class A
+        def initialize: (?Hash[untyped, untyped] h) ?{ (A) -> void } -> void
+      end
+      class B < A
+        def initialize: (?untyped h) -> void
+      end
+    RBS
+    assert_finds(/B#initialize: super passes the block on to A#initialize/, found)
+  end
 end

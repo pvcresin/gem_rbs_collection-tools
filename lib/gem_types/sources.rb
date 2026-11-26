@@ -734,10 +734,10 @@ module GemTypes
         when Prism::YieldNode
           args = n.arguments&.arguments || []
           u[:yields] << (args.any? { |a| a.is_a?(Prism::SplatNode) } ? nil : args.size)
-        when Prism::ForwardingSuperNode then u[:forwarded] = true
+        when Prism::ForwardingSuperNode then u[:forwarded] = u[:super] = true
         when Prism::SuperNode
           # `super(a)` passes the method's block on as well.
-          u[:forwarded] = true unless n.block.is_a?(Prism::BlockNode)
+          u[:forwarded] = u[:super] = true unless n.block.is_a?(Prism::BlockNode)
         when Prism::CallNode
           if n.receiver.nil? && %i[block_given? iterator?].include?(n.name)
             u[:guarded] = true

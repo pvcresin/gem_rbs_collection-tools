@@ -61,7 +61,8 @@ module GemTypes
         full = name if decl.name.absolute?
         # RBS's resolution context: [outer context, absolute name].
         ctx = [ctx, RBS::TypeName.parse("::#{full}")]
-        out[:classes] << { name: full, empty: decl.members.empty?, kind: decl.is_a?(RBS::AST::Declarations::Module) ? :module : :class, file: file, line: decl.location&.start_line, ns: ns.dup, decl: decl, ctx: ctx }
+        sup = decl.is_a?(RBS::AST::Declarations::Class) && decl.super_class ? decl.super_class.name.to_s.delete_prefix("::") : nil
+        out[:classes] << { name: full, super: sup, empty: decl.members.empty?, kind: decl.is_a?(RBS::AST::Declarations::Module) ? :module : :class, file: file, line: decl.location&.start_line, ns: ns.dup, decl: decl, ctx: ctx }
         decl.members.each do |m|
           case m
           when RBS::AST::Members::MethodDefinition
@@ -90,6 +91,7 @@ module GemTypes
         next unless src
 
         out.concat(blocks(m, src))
+        out.concat(super_block(m, src, d))
         out.concat(arity(m, src))
         out.concat(nil_return(m, src))
         if !m.both && m.key.include?(".") && defs.hidden[m.key.sub(".", "#")] == "module_function"
@@ -427,7 +429,7 @@ module GemTypes
       with = m.overloads.select(&:block)
       without = m.overloads.reject(&:block)
       takes = !u[:yields].empty? || u[:guarded] || u[:self_eval] || u[:stored] || (u[:named] && u[:forwarded])
-      if with.empty? && takes && !m.key.end_with?("#initialize")
+      if with.empty? && takes
         out << [m.key, "the source #{u[:yields].empty? ? 'takes a block (&block)' : 'yields'} but no overload declares one"]
       end
       if !with.empty? && without.empty? && with.all? { |mt| mt.block.required }
@@ -553,6 +555,34 @@ module GemTypes
       return nil unless pos
 
       pos - ((content.rindex("\n", pos) || -1) + 1)
+    end
+
+    # `super` / `super(args)` passes the caller's block on. When the RBS of
+    # the superclass's method takes a block and this one declares none,
+    # `Sub.new { ... }` is rejected although it works (highline's
+    # SampleColorScheme#initialize calls super(SAMPLE_SCHEME)).
+    def super_block(m, src, d)
+      u = src[:block] or return []
+      return [] unless u[:super] && m.overloads.none?(&:block)
+
+      owner, sep, name = m.key.rpartition(/[#.]/)
+      return [] unless sep == "#"
+
+      by_name = d[:classes].to_h { |c| [c[:name], c] }
+      seen = []
+      cls = by_name[owner]
+      while cls && (sup = cls[:super]) && !seen.include?(sup)
+        seen << sup
+        cand = [sup, *owner.split("::")[0..-2].each_index.map { |i| (owner.split("::")[0..i] + [sup]).join("::") }]
+        target = cand.find { |n| by_name.key?(n) } or break
+        decl = d[:methods].find { |x| x.key == "#{target}##{name}" }
+        if decl&.overloads&.any?(&:block)
+          blk = decl.overloads.find(&:block).block
+          return [[m.key, "super passes the block on to #{target}##{name}, which takes one: declare `?{ #{blk.type.param_to_s.empty? ? '()' : "(#{blk.type.param_to_s})"} ... }` here too"]]
+        end
+        cls = by_name[target]
+      end
+      []
     end
 
     # Positional counts and keywords against the def's parameters.
