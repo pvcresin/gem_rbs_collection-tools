@@ -53,8 +53,9 @@ module GemTypesErrLog
   #   literal for small Symbol/Integer/String values, mod: the module when
   #   the value is a Class/Module, e:/k:/v: element/key/value classes of an
   #   Array, Set or Hash (at most CAP each; more: true when there were more)
-  #   , sup: the nearest ancestor class declared in the RBS, anon: true
-  #   for an anonymous class }
+  #   , sup: the nearest ancestor class declared in the RBS, anc: the
+  #   declared superclasses (at most 6), anon: true for an anonymous
+  #   class }
   def describe(env, val, depth = 0)
     klass = KCLASS.bind_call(val)
     d = class_info(env, klass)
@@ -91,6 +92,12 @@ module GemTypesErrLog
         end
     tp = name ? type_params(env, name) : 0
     d[:tp] = tp if tp.positive?
+    if klass.is_a?(Class)
+      anc = klass.ancestors.grep(Class).drop(1).filter_map do |a|
+        a.name if a.name && ![Object, BasicObject].include?(a) && type_known?(env, a.name)
+      end
+      d[:anc] = anc.first(6) unless anc.empty?
+    end
     unless d[:known]
       sup = (klass.is_a?(Class) ? klass.ancestors.grep(Class) : []).find do |a|
         a.name && a != klass && ![Object, BasicObject].include?(a) && type_known?(env, a.name)

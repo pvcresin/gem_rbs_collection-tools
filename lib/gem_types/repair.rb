@@ -3,6 +3,7 @@
 require "json"
 require "fileutils"
 require "shellwords"
+require "set"
 require "rbs"
 
 module GemTypes
@@ -205,11 +206,23 @@ module GemTypes
         if new_arg.is_a?(RBS::Types::Bases::Any)
           top?(arg) ? atext : "untyped"
         else
-          widen(atext, [new_arg.to_s]) || atext
+          w = widen(atext, [new_arg.to_s])
+          w && union_size(w) > MAX_ELEMENT_TYPES ? "untyped" : (w || atext)
         end
       end
       name = text[/\A[^\[]*/]
       "#{name}[#{parts.join(', ')}]"
+    end
+
+    # Top-level members of a union type (nil counts as one).
+    def union_size(text)
+      t = RBS::Parser.parse_type(text)
+      n = 0
+      if t.is_a?(RBS::Types::Optional)
+        n = 1
+        t = t.type
+      end
+      n + (t.is_a?(RBS::Types::Union) ? t.types.size : 1)
     end
 
     # Literal values (`:c` for a slot typed `:a | :b`) widen the literal
@@ -324,8 +337,12 @@ module GemTypes
           end
         end
         adds = {}
+        # A value whose class is a subclass of another observed class
+        # counts for that class (FileTask with Task: Task alone).
+        observed = normal.filter_map { _1["value"]["c"] unless _1["value"]["mod"] }.to_set
         normal.each do |r|
-          type = literal_addition(old, r["value"])
+          sup = (r["value"]["anc"] || []).reverse.find { observed.include?(_1) }
+          type = sup || literal_addition(old, r["value"])
           type, why = rbs_type(r["value"], test_file: test_file) unless type
           if type
             (adds[type] ||= { count: 0, frame: nil, keys: [] })[:count] += r["count"]

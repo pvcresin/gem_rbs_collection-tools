@@ -71,6 +71,7 @@ class RepairTest < Minitest::Test
     assert_equal "Array[untyped]", R.widen("Array[String]", ["Array[untyped]"])
     assert_equal "Hash[Symbol | String, Integer?]", R.widen("Hash[Symbol, Integer]", ["Hash[String | Symbol, Integer?]"])
     assert_equal "::Array[String | Integer]", R.widen("::Array[String]", ["Array[Integer]"])
+    assert_equal "Hash[Symbol, untyped]", R.widen("Hash[Symbol, String | Integer]", ["Hash[Symbol, Float | URI::HTTP]"])
   end
 
   def test_widen_returns_nil_when_nothing_changes
@@ -150,6 +151,21 @@ class RepairTest < Minitest::Test
       plan = R.plan(recs, files: [file], test_file: ->(p) { p.start_with?("test/") })
       assert_equal [["String", "String | Symbol"]], plan[:changes].map { [_1.old, _1.new] }
       assert_match(/receiver's class MyTest is defined by the tests/, plan[:skipped].first[:reason])
+    end
+  end
+
+  def test_plan_counts_subclasses_for_an_observed_superclass
+    Dir.mktmpdir do |dir|
+      file = File.join(dir, "a.rbs")
+      text = "class M\n  def []: (String name) -> void\nend\n"
+      File.write(file, text)
+      recs = [record(file, text, "String", known("Rake::Task")),
+              record(file, text, "String", known("Rake::FileTask", anc: ["Rake::Task"])),
+              record(file, text, "String", known("Rake::FileCreationTask", anc: ["Rake::FileTask", "Rake::Task"]))]
+      plan = R.plan(recs, files: [file], test_file: ->(_) { false })
+      assert_equal [["String | Rake::Task", 6]], plan[:changes].map { [_1.new, _1.count] }
+      only_sub = R.plan(recs[1, 1], files: [file], test_file: ->(_) { false })
+      assert_equal ["String | Rake::FileTask"], only_sub[:changes].map(&:new)
     end
   end
 
