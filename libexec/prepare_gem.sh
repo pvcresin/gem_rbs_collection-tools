@@ -7,8 +7,11 @@
 # Usage: prepare_gem.sh <gem> [version] [workdir]
 #   version defaults to the latest release; workdir to ./rbs-work/<gem>
 # Result:
+#   <workdir>/<gem>-<ver>.gem  the package (the pure-Ruby one when there are platform builds)
 #   <workdir>/pkg/          unpacked .gem (what users install)
 #   <workdir>/repo/         upstream repo at the matching tag (if found)
+#   <workdir>/repo_dir      the gem's root in repo/ (repo/<subdir> in a monorepo)
+#   <workdir>/version       the prepared version (rerunning with another one starts over)
 #   <workdir>/env/Gemfile   BUNDLE_GEMFILE for running the repo's tests
 #   <workdir>/gemhome/      GEM_HOME for this gem
 # Then: cd <workdir>/env && GEM_HOME=../gemhome bundle install
@@ -19,7 +22,45 @@ if [ -z "$ver" ]; then
   ver=$(ruby -Eutf-8 -rjson -rnet/http -e 'puts JSON.parse(Net::HTTP.get(URI("https://rubygems.org/api/v1/gems/#{ARGV[0]}.json")))["version"]' "$gem")
 fi
 echo "gem: $gem $ver"
-( cd "$W" && gem fetch "$gem" -v "$ver" >/dev/null && tar -xOf "$gem-$ver.gem" data.tar.gz | tar -xz -C pkg )
+
+# A workdir prepared for another version starts over: the old checkout,
+# package and test command would mix with the new ones.
+prev=""
+if [ -f "$W/version" ]; then
+  prev=$(cat "$W/version")
+else
+  # Older workdirs have no version file: go by the package file names.
+  for f in "$W/$gem"-*.gem; do
+    [ -e "$f" ] || continue
+    v=$(basename "$f" .gem); v=${v#"$gem"-}
+    case "$v" in "$ver"|"$ver"-*) ;; *) prev=$v ;; esac
+  done
+fi
+if [ -n "$prev" ] && [ "$prev" != "$ver" ]; then
+  echo "workdir was prepared for $gem $prev: removing its repo/, pkg/, env/ and package"
+  rm -rf "$W/repo" "$W/env" "$W/test_cmd" "$W/repo_dir"
+fi
+rm -rf "$W/pkg"; mkdir -p "$W/pkg"
+for f in "$W/$gem"-*.gem; do
+  [ -e "$f" ] || continue
+  case "$(basename "$f")" in "$gem-$ver.gem") ;; *) rm -f "$f" ;; esac
+done
+
+# Platform builds (ffi, nokogiri, ...): take the pure-Ruby package, whose
+# lib/ matches the repository; fall back to whatever `gem fetch` gives.
+pkgfile="$W/$gem-$ver.gem"
+if [ ! -f "$pkgfile" ]; then
+  ( cd "$W" && { gem fetch "$gem" -v "$ver" --platform ruby >/dev/null 2>&1 && [ -f "$gem-$ver.gem" ]; } ||
+               gem fetch "$gem" -v "$ver" >/dev/null )
+  if [ ! -f "$pkgfile" ]; then
+    pkgfile=$(ls -1 "$W/$gem-$ver"-*.gem 2>/dev/null | head -1 || true)
+    [ -n "$pkgfile" ] || { echo "gem fetch $gem -v $ver: no package" >&2; exit 1; }
+    echo "package: $(basename "$pkgfile") (no pure-Ruby package for $ver)"
+  fi
+fi
+tar -xOf "$pkgfile" data.tar.gz | tar -xz -C "$W/pkg"
+printf '%s\n' "$ver" > "$W/version"
+
 src=$(ruby -Eutf-8 -rjson -rnet/http -e '
   i = JSON.parse(Net::HTTP.get(URI("https://rubygems.org/api/v1/gems/#{ARGV[0]}.json")))
   meta = i["metadata"] || {}
@@ -36,11 +77,20 @@ elif [ -n "$src" ]; then
   if [ -n "$tag" ]; then
     git -c advice.detachedHead=false clone -q --depth 1 --branch "$tag" "$src" "$W/repo" && echo "repo: $src @ $tag"
   else
-    # No tag: take the default branch at the commit that set the version.
+    # No tag: take the default branch at the commit that set the version
+    # (the oldest commit whose version file or gemspec diff has the version
+    # as a quoted string, or a VERSION file with just the version).
     git clone -q --depth 500 "$src" "$W/repo" 2>/dev/null || true
     commit=""
     if [ -d "$W/repo/.git" ]; then
-      commit=$(cd "$W/repo" && git log --format=%H -S"$ver" -- '*version*' '*.gemspec' 2>/dev/null | tail -1)
+      vre=${ver//./\\.}
+      cands=$(cd "$W/repo" && {
+        git log --format=%H -G"[\"']$vre[\"']" -- '*version.rb' '*.gemspec' 2>/dev/null || true
+        git log --format=%H -G"^$vre\$" -- VERSION '*/VERSION' 2>/dev/null || true
+      })
+      if [ -n "$cands" ]; then
+        commit=$(cd "$W/repo" && git rev-list --topo-order --reverse HEAD | grep -Fx -f <(printf '%s\n' "$cands") | head -1 || true)
+      fi
     fi
     if [ -n "$commit" ]; then
       (cd "$W/repo" && git -c advice.detachedHead=false checkout -q "$commit")
@@ -54,15 +104,32 @@ else
   echo "repo: not found in gem metadata; clone the source at the release tag into $W/repo and rerun prepare" >&2
 fi
 if [ -d "$W/repo" ]; then
+  # Monorepos (sinatra/rack-protection, rspec, ...): the gem lives in the
+  # directory holding <gem>.gemspec.
+  root="$W/repo"
+  if [ ! -f "$root/$gem.gemspec" ]; then
+    sub=$(cd "$W/repo" && git ls-files "*/$gem.gemspec" 2>/dev/null | awk '{ print length($0) "\t" $0 }' | sort -n | head -1 | cut -f2- || true)
+    if [ -n "$sub" ]; then
+      root="$W/repo/$(dirname "$sub")"
+      echo "repo: the gem is in $(dirname "$sub")/ of the repository"
+    fi
+  fi
+  printf '%s\n' "$root" > "$W/repo_dir"
+  # A saved config from an earlier run keeps pointing at the gem's root.
+  if [ -f "$W/gem-types.json" ]; then
+    ruby -rjson -e 'f, r = ARGV; c = JSON.parse(File.read(f)); c["repo"] == r or File.write(f, JSON.pretty_generate(c.merge("repo" => r)))' \
+      "$W/gem-types.json" "$root"
+  fi
   mkdir -p "$W/env"
   here=$(cd "$(dirname "$0")" && pwd)
-  ruby "$here/env_gemfile.rb" "$W/$gem-$ver.gem" "$W/repo" > "$W/env/Gemfile"
+  ruby "$here/env_gemfile.rb" "$pkgfile" "$root" > "$W/env/Gemfile"
   echo "env: $W/env/Gemfile (from the package's dependencies and the repo's Gemfile)"
-  cmd=$(ruby "$here/detect_test_cmd.rb" "$W/repo" "$W/env/Gemfile")
+  cmd=$(ruby "$here/detect_test_cmd.rb" "$root" "$W/env/Gemfile")
   if [ -n "$cmd" ]; then
     printf '%s\n' "$cmd" > "$W/test_cmd"
     echo "test command (guess, saved to $W/test_cmd; collect uses it unless --test-cmd is given): $cmd"
   else
+    rm -f "$W/test_cmd"
     echo "test command: could not guess; pass --test-cmd to collect" >&2
   fi
 fi

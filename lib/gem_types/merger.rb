@@ -16,6 +16,19 @@ module GemTypes
       @shape_lines = group_shapes(shapes)
     end
 
+    # Class info from the sources with the existing RBS's on top: a
+    # module only the existing RBS declares must not be drafted as a class.
+    def self.with_existing_classes(classes, existing)
+      out = classes.dup
+      existing.each do |name, info|
+        cur = out[name]
+        out[name] = if cur.nil? || cur[:kind] != info[:kind] || info[:super] then info
+                    else cur
+                    end
+      end
+      out
+    end
+
     def keys
       @keys ||= (@evidence.values.flat_map(&:keys) | @existing.keys).uniq.sort_by { |k| sort_key(k) }
     end
@@ -24,8 +37,19 @@ module GemTypes
     # internal in the source (an existing RBS entry keeps them in).
     def hidden_keys = @hidden_keys ||= keys.select { |k| @hidden.key?(k) && !@existing.key?(k) }
 
-    # The signature to draft from, and the source it came from.
-    def pick(key)
+    # The signature to draft from, and the source it came from. A method
+    # only known as an alias gets the signature of the method it aliases.
+    def pick(key, seen = [])
+      direct = pick_direct(key) and return direct
+      if (target = alias_target(key)) && !seen.include?(key)
+        owner, sep, = GemTypes.split_key(key)
+        return pick("#{owner}#{sep}#{target}", seen + [key])
+      end
+      ["(*untyped) -> untyped", nil]
+    end
+
+    # [signature, source] from the evidence for `key` itself, or nil.
+    def pick_direct(key)
       PRIORITY.each do |src|
         e = src == "existing" ? existing_evidence(key) : @evidence.dig(src, key)
         next unless e
@@ -37,7 +61,18 @@ module GemTypes
 
         return [rbs, src]
       end
-      ["(*untyped) -> untyped", nil]
+      nil
+    end
+
+    # The method `key` aliases, when some source (or the existing RBS) only
+    # says that it is an alias.
+    def alias_target(key)
+      PRIORITY.each do |src|
+        e = src == "existing" ? existing_evidence(key) : @evidence.dig(src, key)
+        sig = e&.sigs&.find { |x| x.start_with?("(alias of ") } or next
+        return sig[/\A\(alias of (.+)\)\z/, 1]
+      end
+      nil
     end
 
     def draft
@@ -45,30 +80,61 @@ module GemTypes
       by_owner = keys.group_by { |k| GemTypes.split_key(k).first }
       by_owner.sort.each do |owner, ks|
         info = @classes[owner] || { kind: "class" }
-        sup = info[:kind] == "class" && info[:super] && !%w[Object BasicObject].include?(info[:super]) ? " < #{info[:super]}" : ""
+        sup = info[:kind] == "class" && info[:super] && !%w[Object BasicObject].include?(info[:super]) ? " < #{superclass(info)}" : ""
         out << "#{info[:kind]} #{owner}#{sup}"
         ks -= hidden_keys
         ks.each do |k|
           _, sep, name = GemTypes.split_key(k)
+          prefix = sep == "." ? "self." : ""
           base = k.delete_suffix("=")
           rbs, src = pick(k)
-          if (attr = @attrs[base])
-            next if k.end_with?("=") && attr[:kind] == "accessor" && ks.include?(base)
+          attr = @attrs[base]
+          # attr_reader :x with a hand-written `def x=` (or attr_writer :y
+          # with `def y`): the def is not part of the attribute.
+          attr = nil if attr && (k == base ? attr[:kind] == "writer" : attr[:kind] == "reader")
+          if attr
+            kind = attr[:kind]
+            # A private writer (`private :x=`) leaves a public reader.
+            writer_hidden = kind == "accessor" && @hidden.key?("#{base}=") && !@existing.key?("#{base}=")
+            kind = "reader" if writer_hidden
+            next if k.end_with?("=") && kind == "accessor" && ks.include?(base)
 
-            writer = k == base ? (pick("#{base}=") if keys.include?("#{base}=")) : [rbs, src]
+            writer = if k != base then [rbs, src]
+                     elsif kind != "reader" && keys.include?("#{base}=") then pick("#{base}=")
+                     end
             type = attr_type(k == base && src ? rbs : nil, writer && writer[1] ? writer[0] : nil)
-            kind = attr[:kind] == "accessor" && !ks.include?(base) ? "writer" : attr[:kind]
-            out << "  # #{comment(k, src)} | attr_#{attr[:kind]} in the source"
-            out << "  attr_#{kind} #{sep == '.' ? 'self.' : ''}#{name.delete_suffix('=')}: #{type}"
+            kind = "writer" if kind == "accessor" && !ks.include?(base)
+            out << "  # #{comment(k, src)} | attr_#{attr[:kind]} in the source#{writer_hidden ? ' (writer is private)' : ''}"
+            out << "  attr_#{kind} #{prefix}#{method_name(name.delete_suffix('='))}: #{type}"
             next
+          end
+          if !pick_direct(k) && (target = alias_target(k))
+            target_key = "#{owner}#{sep}#{target}"
+            if ks.include?(target_key)
+              out << "  # #{comment(k, 'alias')}"
+              out << "  alias #{prefix}#{method_name(name)} #{prefix}#{method_name(target)}"
+              next
+            end
           end
           rbs = void_return(rbs) if name == "initialize" && sep == "#"
           out << "  # #{comment(k, src)}"
-          out << "  def #{sep == '.' ? 'self.' : ''}#{name}: #{rbs}"
+          out << "  def #{prefix}#{method_name(name)}: #{rbs}"
         end
         out << "end" << ""
       end
       out.join("\n")
+    end
+
+    # A method name as RBS needs it: names Ruby allows but RBS does not
+    # parse bare (`valid?_with_rescue`) are quoted with backticks.
+    def method_name(name)
+      @method_names ||= {}
+      @method_names[name] ||= begin
+        RBS::Parser.parse_signature("class X\n  def #{name}: () -> void\nend\n")
+        name
+      rescue RBS::ParsingError
+        "`#{name}`"
+      end
     end
 
     def report
@@ -128,41 +194,111 @@ module GemTypes
       end
       # Sources that left something untyped, or that do not record blocks
       # (rbs-trace), would only add noise: compare typed parts, without blocks.
-      owner = GemTypes.split_key(key).first
-      cmp = ->(list) { list.map(&:to_rbs).compact.map { |s| comparable(s, owner) }.reject { |s| s.match?(/untyped|-> void\b/) }.uniq }
+      owner, sep, = GemTypes.split_key(key)
+      cmp = lambda do |list|
+        list.filter_map do |e|
+          s = e.to_rbs or next
+          s = self_to_owner(s, owner, sep)
+          c = comparable(s) or next
+          next if c.match?(/untyped|-> void\b/)
+          # Method type variables (`[T] (T) -> T`) say what tracepoint can
+          # only see as concrete types: not comparable.
+          next unless GemTypes.projection(s)
+
+          [e.source, s]
+        end
+      end
+      same = ->((sa, a), (sb, b)) { same_types?(sa, a, sb, b) }
       rt = cmp.(runtime)
-      f << "runtime sources disagree" if rt.size > 1
+      f << "runtime sources disagree" if rt.combination(2).any? { |a, b| !same.(a, b) }
+      # Without type arguments Lumitrace agrees with too much: it is the
+      # reference only when no other runtime source has a comparable type.
+      ref = rt.reject { |src, _| src == "lumitrace" }
+      ref = rt if ref.empty?
       st = cmp.(static)
-      if !rt.empty? && !st.empty? && (st - rt).any?
+      if !ref.empty? && st.any? { |x| ref.none? { |r| same.(x, r) } }
         f << "static inference differs from runtime"
       end
       dc = docs ? cmp.([docs]) : []
-      f << "YARD docs differ from runtime" if !rt.empty? && !dc.empty? && (dc - rt).any?
+      f << "YARD docs differ from runtime" if !ref.empty? && dc.any? { |x| ref.none? { |r| same.(x, r) } }
       f
     end
 
     private
 
-    def comparable(sig, owner = nil)
-      sig = sig.gsub(/\bself\b(?!:)/, owner) if owner
+    # Whether two sources' signatures say the same per slot, apart from
+    # what one of the tools cannot record: Lumitrace sees classes without
+    # type arguments, and a rest parameter as the whole Array (Hash);
+    # rbs-trace writes `*nil` for a call without rest arguments; both write
+    # Class (or Module) where tracepoint names singleton(Foo); tyda leaves
+    # constants relative. Test doubles are not types of the gem.
+    def same_types?(src_a, sig_a, src_b, sig_b)
+      srcs = [src_a, src_b]
+      erase = srcs.include?("lumitrace")
+      pa = GemTypes.projection(sig_a, erase_args: erase)
+      pb = GemTypes.projection(sig_b, erase_args: erase)
+      return false unless pa && pb
+
+      classes_only = srcs.intersect?(%w[lumitrace rbs_trace])
+      [pa, pb].map do |pr|
+        pr.to_h do |slot, types|
+          types = [] if erase && %w[* **].include?(slot)
+          types -= ["nil"] if slot == "*" && srcs.include?("rbs_trace")
+          types = types.reject { |t| t.match?(TEST_DOUBLE) }
+          types = types.map { |t| t.start_with?("singleton(") || %w[Class Module].include?(t) ? "Module" : t }.uniq.sort if classes_only
+          # tyda writes constants relative to the namespace (`Expression`).
+          types = types.map { |t| t.gsub(/\b(?:[A-Z]\w*::)+(?=[A-Z])/, "") }.uniq.sort if srcs.include?("tyda")
+          [slot, types]
+        end
+      end.uniq.size == 1
+    end
+
+    def comparable(sig, owner = nil, sep = "#")
+      sig = self_to_owner(sig, owner, sep) if owner
       (GemTypes.canonical(sig) || sig).gsub(/\)\??\{\}/, ")")
     end
 
-    def void_return(sig)
-      sig.split(/ \| (?=\(|\[)/).map do |o|
-        mt = RBS::Parser.parse_method_type(o)
-        mt.update(type: mt.type.with_return_type(RBS::Types::Bases::Void.new(location: nil))).to_s
-      rescue StandardError
-        o
-      end.join(" | ")
+    # `self` as the type it stands for: the instance for `#` keys,
+    # singleton(Owner) for `.` keys (`self:` in a block is not a type).
+    def self_to_owner(sig, owner, sep)
+      sig.gsub(/\bself\b(?!:)/, sep == "." ? "singleton(#{owner})" : owner)
     end
 
-    # The attribute type from a reader's return type and a writer's
-    # parameter type, whichever is known and typed.
+    def void_return(sig)
+      mts, dots = GemTypes.overloads(sig)
+      return sig unless mts
+
+      list = mts.map do |mt|
+        next mt.to_s unless mt.type.is_a?(RBS::Types::Function) || mt.type.is_a?(RBS::Types::UntypedFunction)
+
+        mt.update(type: mt.type.with_return_type(RBS::Types::Bases::Void.new(location: nil))).to_s
+      end
+      list << "..." if dots
+      list.uniq.join(" | ")
+    end
+
+    # The attribute type from a reader's return type and a writer's first
+    # parameter type, whichever is known and usable as an attribute type.
     def attr_type(reader_sig, writer_sig)
-      r = reader_sig && reader_sig[/-> (.+)\z/, 1]
-      w = writer_sig && writer_sig[/\A\((.+?)(?: \w+)?\) ->/, 1]
-      [r, w].compact.reject { |t| t == "untyped" || t.start_with?("*", "?") || t.include?(") ->") }.first || "untyped"
+      candidates = []
+      if (mts, = GemTypes.overloads(reader_sig)) && mts
+        candidates << mts.first.type.return_type if mts.size == 1 && plain_method?(mts.first)
+      end
+      if (mts, = GemTypes.overloads(writer_sig)) && mts
+        f = mts.first.type
+        candidates << f.required_positionals.first&.type if mts.size == 1 && plain_method?(mts.first)
+      end
+      t = candidates.compact.find do |c|
+        ![RBS::Types::Bases::Void, RBS::Types::Bases::Any, RBS::Types::Bases::Self].include?(c.class)
+      end
+      t ? t.to_s : "untyped"
+    end
+
+    def plain_method?(mt) = mt.type.is_a?(RBS::Types::Function) && mt.type_params.empty?
+
+    def superclass(info)
+      args = info[:super_args]
+      args && !args.empty? ? "#{info[:super]}[#{args.join(', ')}]" : info[:super]
     end
 
     def existing_evidence(key)

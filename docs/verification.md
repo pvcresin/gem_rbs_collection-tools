@@ -122,6 +122,16 @@ overrides an inherited method's type (e.g. `map` on a Hash subclass whose
 `each` yields values) is not checked at runtime. Check those with
 assertions on what the method yields and returns.
 
+`verify` fails (non-zero exit, `VERIFY FAILED: ...`) instead of reporting
+success when the RBS does not parse (exit 2), when Steep did not finish or
+reports errors in the signatures themselves, when a declared alias or
+superclass does not match the gem, or when the checked test run is
+incomplete (`CHECKED RUN INCOMPLETE`: no tests or no type checks counted,
+fewer tests than the plain run, more failures, errors outside of
+examples). An incomplete run is never written up as "no type errors", in
+verify's own PR lines or in `pr-text`. Test commands run under a timeout
+(`GEM_TYPES_TEST_TIMEOUT`, default 1800 seconds).
+
 `verify` also lints the RBS against the source for two mistakes reviews
 found: an `opts = {}` method declared with keywords only, and methods that
 refer to `Fixnum`/`Bignum` (NameError on Ruby 3.2+).

@@ -5,7 +5,11 @@
 require "rspec/core"
 require "rspec/mocks"
 require "rspec/expectations"
-require "test/unit/assertions" rescue nil
+begin
+  require "test/unit/assertions"
+rescue LoadError
+  # test-unit is not in the bundle: no assert_* helpers.
+end
 
 RSpec.configure do |c|
   c.mock_with(:rspec) { |m| m.syntax = %i[should expect] }

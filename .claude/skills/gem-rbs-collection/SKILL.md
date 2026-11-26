@@ -235,6 +235,10 @@ name parameters properly, and decide unions.
 
 ## 4. Verify
 
+Trust `verify`'s exit status: 0 only when exists, Steep and a complete
+checked test run all pass. If it prints `CHECKED RUN INCOMPLETE`, fix the
+run before writing any suite numbers into a PR.
+
 `gem-types verify --workdir W --sig gems/<gem>/<ver>/<gem>.rbs` runs the
 existence check, Steep, and the gem's test suite with and without runtime
 type checking, then lists declared methods the suite never called and

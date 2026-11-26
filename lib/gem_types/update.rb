@@ -13,7 +13,7 @@ module GemTypes
     def run(config, workdir, sig, from: nil, libraries: [])
       problems = 0
       defs = DefIndex.new(config.lib_paths)
-      rbs = RbsReader.read_files(Verify.sig_files(sig), include_private: true)
+      rbs = RbsReader.read_files(RbsReader.sig_files(sig), include_private: true)
 
       if from
         puts "== source changes since #{from} (parameters of public methods)"
@@ -35,7 +35,7 @@ module GemTypes
       puts "", "== public methods not in the RBS"
       proto = Sources.for("prototype", config)
       proto.run if proto.read.empty?
-      seen = proto.read.keys | defs.map { |d| d[:key] } | defs.attrs.keys
+      seen = proto.read.keys | defs.map { |d| d[:key] } | attr_keys(defs)
       missing = seen.reject { |k| rbs.methods.key?(k) || defs.hidden.key?(k) || !config.in_ns?(k) }
       missing = missing.reject { |k| k.end_with?("#initialize") && rbs.methods.keys.none? { |x| x.start_with?(GemTypes.split_key(k).first) } }
       if missing.empty?
@@ -57,6 +57,10 @@ module GemTypes
         r = Verify.suite(config, sig)
         puts "  #{r[:checked][:total]} #{r[:checked][:unit]}, #{r[:checks]} type checks, #{r[:errors].size} distinct type errors"
         r[:errors].first(20).each { |e| puts "  #{e[0, 220]}" }
+        unless r[:incomplete].to_a.empty?
+          puts "  CHECKED RUN INCOMPLETE: #{r[:incomplete].join('; ')} (see #{r[:logs].last})"
+          problems += 1
+        end
         problems += 1 unless r[:errors].empty?
       end
       problems += 1 unless missing.empty?
@@ -83,18 +87,33 @@ module GemTypes
 
         FileUtils.mkdir_p(File.join(tmp, "old"))
         system("bash", "-c", "tar -xOf #{pkg.shellescape} data.tar.gz | tar -xz -C old", chdir: tmp) or return nil
-        old_defs = DefIndex.new([File.join(tmp, "old", "lib")])
-        sig = ->(d) { d[:params].map { |p| "#{p[:kind]} #{p[:name]}" }.join(", ") }
-        pub = lambda do |idx|
-          h = idx.reject { |d| idx.hidden.key?(d[:key]) }.to_h { |d| [d[:key], sig.(d)] }
-          idx.attrs.each_key { |k| h[k] ||= "attr" unless idx.hidden.key?(k) }
-          h
-        end
-        a = pub.(old_defs)
-        b = pub.(new_defs)
-        { removed: (a.keys - b.keys).sort, added: (b.keys - a.keys).sort,
-          changed: (a.keys & b.keys).select { |k| a[k] != b[k] }.sort.map { |k| [k, [a[k], b[k]]] } }
+        compare_defs(DefIndex.new([File.join(tmp, "old", "lib")]), new_defs)
       end
+    end
+
+    # { removed:, added:, changed: } between two DefIndexes' public methods.
+    def compare_defs(old_defs, new_defs)
+      sig = ->(d) { d[:params].map { |p| "#{p[:kind]} #{p[:name]}" }.join(", ") }
+      pub = lambda do |idx|
+        h = idx.reject { |d| idx.hidden.key?(d[:key]) }.to_h { |d| [d[:key], sig.(d)] }
+        attr_keys(idx).each { |k| h[k] ||= k.end_with?("=") ? "attr writer" : "attr reader" }
+        h
+      end
+      a = pub.(old_defs)
+      b = pub.(new_defs)
+      { removed: (a.keys - b.keys).sort, added: (b.keys - a.keys).sort,
+        changed: (a.keys & b.keys).select { |k| a[k] != b[k] }.sort.map { |k| [k, [a[k], b[k]]] } }
+    end
+
+    # The public methods attr_* calls define: `x` for readers, `x=` for
+    # writers, both for accessors (a private half left out).
+    def attr_keys(defs)
+      defs.attrs.flat_map do |k, a|
+        keys = []
+        keys << k unless a[:kind] == "writer"
+        keys << "#{k}=" unless a[:kind] == "reader"
+        keys
+      end.reject { |k| defs.hidden.key?(k) }
     end
   end
 end

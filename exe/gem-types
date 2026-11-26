@@ -50,7 +50,11 @@ end
 def load_config(workdir, opts)
   file = File.join(workdir, "gem-types.json")
   saved = File.exist?(file) ? JSON.parse(File.read(file), symbolize_names: true) : {}
-  repo = opts[:repo] || saved[:repo] || [File.join(workdir, "repo"), File.join(workdir, "pkg")].find { |d| Dir.exist?(d) }
+  # repo_dir (from prepare) is the gem's root in a monorepo checkout.
+  repo_dir = File.join(workdir, "repo_dir")
+  prepared = File.read(repo_dir).strip if File.exist?(repo_dir)
+  repo = opts[:repo] || saved[:repo] ||
+         [prepared, File.join(workdir, "repo"), File.join(workdir, "pkg")].find { |d| d && !d.empty? && Dir.exist?(d) }
   env = saved[:env] || {}
   if env.empty?
     gemfile = File.join(workdir, "env", "Gemfile")
@@ -123,6 +127,8 @@ when "run"
   exit(results.all? { _1.status == "ok" } ? 0 : 1)
 when "collect"
   opts = parse(ARGV)
+  unknown = (opts[:sources] || []) - GemTypes::Sources::ALL
+  abort "unknown source(s): #{unknown.join(', ')} (known: #{GemTypes::Sources::ALL.join(', ')})" unless unknown.empty?
   cfg = load_config(opts[:workdir], opts)
   selected = opts[:sources] || GemTypes::Sources::ALL
   run_one = lambda do |src|
@@ -153,7 +159,10 @@ when "draft"
     classes = s.classes.merge(classes) if s.respond_to?(:classes)
     shapes = s.shapes if src == "tracepoint"
   end
-  existing = opts[:existing] ? GemTypes::RbsReader.read_files([opts[:existing]]).methods : {}
+  # --existing takes a file or a directory (without its _test/ files).
+  existing_rbs = opts[:existing] && GemTypes::RbsReader.read_files(GemTypes::RbsReader.sig_files(File.expand_path(opts[:existing])))
+  existing = existing_rbs ? existing_rbs.methods : {}
+  classes = GemTypes::Merger.with_existing_classes(classes, existing_rbs.classes) if existing_rbs
   merger = GemTypes::Merger.new(evidence: evidence, classes: classes, shapes: shapes, existing: existing,
                                 defs: GemTypes::DefIndex.new(cfg.lib_paths))
   File.write(File.join(opts[:workdir], "draft.rbs"), merger.draft)
@@ -179,7 +188,13 @@ when "verify"
     m = File.join(sigdir, "manifest.yaml")
     File.exist?(m) ? (YAML.load_file(m)["dependencies"] || []).map { _1["name"] } : []
   end
-  rbs_files = GemTypes::Verify.sig_files(sig)
+  # RBS that does not parse would pass every later check (each reads it as
+  # empty): stop here.
+  begin
+    rbs_files = GemTypes::Verify.parse_sigs(sig).map(&:first)
+  rescue GemTypes::Verify::SigError => e
+    exit GemTypes::Verify.sig_error(e)
+  end
   puts "== exists"
   exists = GemTypes::Verify.exists(cfg, sig)
   puts "", "== steep"
@@ -187,15 +202,26 @@ when "verify"
   puts "", "== test suite (plain, then with runtime type checking)"
   r = GemTypes::Verify.suite(cfg, sig)
   p_, c = r[:plain], r[:checked]
-  puts "plain:   #{p_[:total]} #{p_[:unit]}, #{p_[:failed]} failing"
-  puts "checked: #{c[:total]} #{c[:unit]}, #{c[:failed]} failing, #{r[:checks]} type checks, #{r[:errors].size} distinct type errors"
-  puts "  (more failures with checking than without are tool artifacts or type errors; see docs/verification.md)" if c[:failed] > p_[:failed]
+  incomplete = r[:incomplete]
+  puts "plain:   #{p_[:total]} #{p_[:unit]}, #{p_[:failed]} failing#{p_[:outside].to_i.positive? ? " (#{p_[:outside]} errors outside of examples)" : ''}"
+  puts "checked: #{c[:total]} #{c[:unit]}, #{c[:failed]} failing, #{r[:checks]} type checks, #{r[:errors].size} distinct type errors" \
+       "#{c[:outside].to_i.positive? ? " (#{c[:outside]} errors outside of examples)" : ''}"
+  unless incomplete.empty?
+    puts "CHECKED RUN INCOMPLETE: #{incomplete.join('; ')}."
+    puts "  The runtime checks did not cover the suite: fix the run (see #{r[:logs].last}) before trusting these numbers."
+  end
   r[:errors].first(20).each { |e| puts "  #{e[0, 220]}" }
   puts "  errors: #{r[:errors_file]}" unless r[:errors].empty?
-  if r[:uncalled]
+  if r[:uncalled] && !incomplete.empty?
+    puts "", "== declared methods the test suite never called", "  (not listed: the checked run is incomplete)"
+  elsif r[:uncalled]
     puts "", "== declared methods the test suite never called (#{r[:uncalled].size})"
     puts "  (call these from your verification script)" unless r[:uncalled].empty?
     r[:uncalled].each { |k| puts "  #{k}" }
+    unless r[:uncalled_private].to_a.empty?
+      puts "  private, never called (#{r[:uncalled_private].size}; call them with send or through the public API):"
+      r[:uncalled_private].each { |k| puts "    #{k}" }
+    end
   end
   puts "", "== lint (mistakes the source shows directly)"
   lint = GemTypes::Verify.lint(cfg, sig)
@@ -213,20 +239,34 @@ when "verify"
     puts "  Tests rarely pass every accepted type; check each against the source."
     wide.each { |key, slot, msg| puts "  #{key} #{slot}: #{msg}" }
   end
-  declared = rbs_files.sum { |f| GemTypes::RbsReader.read_files([f]).methods.size }
+  declared = rbs_files.sum { |f| GemTypes::RbsReader.read_files([f], include_private: true).methods.size }
+  # An incomplete run is recorded as an error too, so readers of
+  # verify.json that only look at "errors" never print "no type errors".
+  json_errors = incomplete.empty? ? r[:errors] : ["CHECKED RUN INCOMPLETE: #{incomplete.join('; ')}"] + r[:errors]
   File.write(File.join(cfg.out, "verify.json"), JSON.pretty_generate(
     exists: exists.zero?, steep: steep.zero?, plain: p_, checked: c, checks: r[:checks],
-    errors: r[:errors], uncalled: r[:uncalled], too_wide: wide, lint: lint
+    suite_complete: incomplete.empty?, incomplete: incomplete, plain_ok: r[:plain_ok], checked_ok: r[:checked_ok],
+    errors: json_errors, uncalled: r[:uncalled], uncalled_private: r[:uncalled_private], too_wide: wide, lint: lint
   ))
   puts "", "== Verification section for the PR (edit the last line to explain any remaining type errors)", ""
   puts "## Verification", ""
   puts "- `bin/test` and RuboCop pass."
   puts "- Reviewed the signatures against the gem source; every declared method, class and module exists in the loaded gem." if exists.zero?
   puts "- Called every declared method with runtime type checking (`rbs/test/setup`)."
-  tail = r[:errors].empty? ? "no type errors" : "#{r[:errors].size} distinct type errors (explain)"
-  puts "- Ran the gem's own test suite with runtime type checking: #{p_[:total]} #{p_[:unit]}, #{r[:checks]} type checks, #{tail}."
+  if incomplete.empty?
+    tail = r[:errors].empty? ? "no type errors" : "#{r[:errors].size} distinct type errors (explain)"
+    puts "- Ran the gem's own test suite with runtime type checking: #{c[:total]} #{c[:unit]}, #{r[:checks]} type checks, #{tail}."
+  else
+    puts "- CHECKED RUN INCOMPLETE (#{incomplete.join('; ')}): do not claim a test suite result until it completes."
+  end
   puts "", "(#{declared} declarations; run your call-every-method script with `gem-types check -c` and `gem-types coverage` before keeping the third line)"
-  exit(exists.zero? && steep.zero? && r[:errors].empty? ? 0 : 1)
+  problems = []
+  problems << "exists" unless exists.zero?
+  problems << "steep" unless steep.zero?
+  problems << "checked run incomplete" unless incomplete.empty?
+  problems << "type errors" unless r[:errors].empty?
+  puts "", "VERIFY FAILED: #{problems.join(', ')}" unless problems.empty?
+  exit(problems.empty? ? 0 : 1)
 when "live"
   opts = parse(ARGV)
   # --test-cmd here is the command to check (often a call-every-method
@@ -234,16 +274,23 @@ when "live"
   cfg = load_config(opts[:workdir], opts.except(:test_cmd))
   sig = File.expand_path(opts[:sig] || abort("--sig is required"))
   cmd = opts[:test_cmd] || cfg.test_cmd or abort "no test command"
-  r = GemTypes::Verify.live(cfg, sig, cmd)
+  begin
+    r = GemTypes::Verify.live(cfg, sig, cmd)
+  rescue GemTypes::Verify::SigError => e
+    exit GemTypes::Verify.sig_error(e)
+  end
   total = r[:checked].size + r[:unchecked].size
   File.write(File.join(cfg.out, "live.json"), JSON.pretty_generate(r.merge(cmd: cmd)))
   puts "#{r[:checked].size}/#{total} declarations failed as expected with every return type made bot (really checked at runtime)."
   unless r[:unchecked].empty?
     puts "Not checked by this command (never called, inherited rather than defined, or not hookable):"
-    r[:unchecked].each { |k| puts "  #{k}" }
+    r[:unchecked].each { |k| puts "  #{k}#{r[:private].include?(k) ? ' (private)' : ''}" }
     puts "Call them from a script and rerun with --test-cmd, or check them with assertions."
   end
-  puts "(initialize is not mutated: #{r[:skipped].size}; log: #{r[:log]})"
+  puts "(not mutated: initialize #{r[:skipped].size}; log: #{r[:log]})"
+  unless r[:aliases].empty?
+    puts "Aliases not mutated themselves and not seen failing (#{r[:aliases].size}; covered only through the aliased method): #{r[:aliases].join(', ')}"
+  end
   exit(r[:unchecked].empty? ? 0 : 1)
 when "pr-text"
   opts = parse(ARGV)

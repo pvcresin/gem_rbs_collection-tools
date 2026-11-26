@@ -40,9 +40,8 @@ module ObserveTypes
              ok: { params: {}, ret: Set.new, block: Set.new, n: 0, ret_nb: Set.new }, kinds: {},
              self_ret: [0, 0], passthrough: [0, 0], blk_args: [], blk_ret: Set.new, blk_self: Set.new }
   end
-  @stack = Hash.new { |h, k| h[k] = [] }
   class << self
-    attr_reader :data, :stack, :ancestors
+    attr_reader :data, :ancestors
     def type_of(v)
       # Subclasses of Array/Hash (e.g. a TokenArray < Array) keep their name.
       k = CLASS.bind_call(v)
@@ -96,36 +95,152 @@ module ObserveTypes
     end
   end
 end
-# An exception being propagated (raised and not yet rescued), per thread.
-ObserveTypes::PENDING = {}
+module ObserveTypes
+  # Blocks defined in Ruby's standard library, installed gems or the VM
+  # (Timeout, Tempfile, rspec-mocks...) are neither the library's nor the
+  # caller's: ignore them.
+  FOREIGN = ([RbConfig::CONFIG["rubylibdir"]] +
+             Gem.path.flat_map { |g| [File.join(g, "gems", ""), File.join(g, "bundler", "gems", "")] })
+            .compact.map { |d| File.join(File.expand_path(d), "") }.uniq
+  @bmethod = {}
+  # Per fiber (an Enumerator#next runs in its own fiber): the traced frames,
+  # and the library blocks running for them (see :b_call).
+  @stacks = defined?(ObjectSpace::WeakKeyMap) ? ObjectSpace::WeakKeyMap.new : {}.compare_by_identity
+  @lib_blocks = defined?(ObjectSpace::WeakKeyMap) ? ObjectSpace::WeakKeyMap.new : {}.compare_by_identity
+  class << self
+    def stack = (@stacks[Fiber.current] ||= [])
+    def lib_blocks = (@lib_blocks[Fiber.current] ||= [])
+    def lib?(path) = LIB.any? { |l| path.start_with?(l) }
+    def foreign?(path) = path.start_with?("<internal:") || FOREIGN.any? { |l| path.start_with?(l) }
+
+    # A method made by define_method: its binding is the block's, so
+    # block_given? there reads the block of the method that defined it.
+    def bmethod?(tp)
+      @bmethod.fetch([tp.defined_class, tp.method_id]) do |k|
+        iseq = (RubyVM::InstructionSequence.of(tp.defined_class.instance_method(tp.method_id)) rescue nil)
+        @bmethod[k] = iseq ? iseq.label.start_with?("block ") : false
+      end
+    end
+
+    # An exception unwinds every frame of this fiber until it is rescued
+    # (calls made meanwhile, e.g. from ensure, start unmarked).
+    def mark(exc) = stack.each { |f| f[:exc] = exc }
+    def clear(kind = nil) = stack.each { |f| f[:exc] = nil if kind.nil? || f[:exc].equal?(kind) }
+    def reset!
+      data.clear
+      @stacks = defined?(ObjectSpace::WeakKeyMap) ? ObjectSpace::WeakKeyMap.new : {}.compare_by_identity
+      @lib_blocks = defined?(ObjectSpace::WeakKeyMap) ? ObjectSpace::WeakKeyMap.new : {}.compare_by_identity
+    end
+
+    # Whether a caller block running now belongs to `frame` (stack[i]).
+    # A frame called by the library itself got either a block passed down
+    # (`inner(&blk)`, the caller's) or one of the library's own; only the
+    # first counts.
+    def owns_block?(st, i)
+      frame = st[i]
+      return true unless frame[:from_lib]
+      return false if frame[:foreign_blocks].positive?
+
+      if frame[:proc]
+        outer = st[0...i].reverse.find { |f| f[:blk] == "yes" && f[:proc] }
+        return outer ? outer[:proc].equal?(frame[:proc]) : true
+      end
+      true
+    end
+  end
+
+  THROW = Object.new.freeze
+  # throw unwinds frames without an exception: mark them like one, and
+  # clear the mark once the catch is done.
+  module ThrowHook
+    private
+
+    def throw(*args)
+      ObserveTypes.mark(ObserveTypes::THROW)
+      super
+    end
+
+    def catch(*args, &blk)
+      super
+    ensure
+      ObserveTypes.clear(ObserveTypes::THROW)
+    end
+  end
+  ::Kernel.prepend(ThrowHook)
+
+  # A forked child starts with the parent's data; it writes only its own.
+  module ForkHook
+    def _fork
+      pid = super
+      ObserveTypes.reset! if pid.zero?
+      pid
+    end
+  end
+  ::Process.singleton_class.prepend(ForkHook) if ::Process.respond_to?(:_fork)
+end
 ObserveTypes::TP = TracePoint.new(:call, :return, :raise, :rescue, :b_call, :b_return) do |tp|
   case tp.event
-  when :raise then ObserveTypes::PENDING[Thread.current] = tp.raised_exception; next
-  when :rescue then ObserveTypes::PENDING.delete(Thread.current); next
+  when :raise then ObserveTypes.mark(tp.raised_exception); next
+  when :rescue then ObserveTypes.clear; next
   when :b_call, :b_return
+    path = tp.path
+    st = ObserveTypes.stack
+    if ObserveTypes.lib?(path)
+      # A library block. When a frame called from the library runs one that
+      # it did not define itself (its caller's literal block), a caller
+      # block run meanwhile is not this frame's block.
+      lb = ObserveTypes.lib_blocks
+      if tp.event == :b_call
+        top = st.last
+        foreign = nil
+        if top && top[:from_lib] && top[:blk] == "yes" && !top[:proc]
+          b = tp.binding
+          own = (b.eval("__method__") rescue nil) == top[:mid] && b.receiver.equal?(top[:self])
+          (foreign = top)[:foreign_blocks] += 1 unless own
+        end
+        lb << foreign
+      elsif (f = lb.pop)
+        f[:foreign_blocks] -= 1
+      end
+      next
+    end
+    next if ObserveTypes.foreign?(path)
+
     # A block from outside the library (the caller's) runs while methods we
     # trace are on the stack: attribute it to the top frames that were given
-    # a block (a block passed down with &block reaches several of them).
+    # it (a block passed down with &block reaches several of them).
     # Record its arguments, its self and what it returns.
-    next if ObserveTypes::LIB.any? { |l| tp.path.start_with?(l) }
-    st = ObserveTypes.stack[Thread.current]
     top = st.last
-    next unless top && top[:blk] == "yes" && tp.path != top[:path]
-    st.reverse_each do |frame|
+    next unless top && top[:blk] == "yes" && path != top[:path]
+
+    (st.size - 1).downto(0) do |i|
+      frame = st[i]
       break unless frame[:blk] == "yes"
+      next unless ObserveTypes.owns_block?(st, i)
+
       if tp.event == :b_call
         if frame[:bdepth].zero?
           d = ObserveTypes.data[frame[:key]]
           b = tp.binding
-          tp.parameters.each_with_index do |(_, pname), i|
-            next unless pname && !pname.to_s.start_with?("*", "&")
+          pos = 0
+          tp.parameters.each do |kind, pname|
+            # Only positional parameters: keywords are not block arguments.
+            break if kind == :rest
+            next unless %i[req opt].include?(kind)
+
+            idx = pos
+            pos += 1
+            next unless pname
+
             v = (b.local_variable_get(pname) rescue next)
-            (d[:blk_args][i] ||= Set.new) << ObserveTypes.type_of(v)
+            (d[:blk_args][idx] ||= Set.new) << ObserveTypes.type_of(v)
           end
           d[:blk_self] << (tp.self.equal?(frame[:self]) ? "receiver" : "caller")
         end
         frame[:bdepth] += 1
       else
+        next if frame[:bdepth].zero?
+
         frame[:bdepth] -= 1
         if frame[:bdepth].zero?
           frame[:blk_val] = tp.return_value
@@ -135,57 +250,24 @@ ObserveTypes::TP = TracePoint.new(:call, :return, :raise, :rescue, :b_call, :b_r
     end
     next
   end
-  owner = ObserveTypes.owner_name(tp) rescue nil
-  next unless owner && ObserveTypes.match?(owner[0])
-  key = "#{owner[0]}#{owner[1]}#{tp.method_id}"
-  st = ObserveTypes.stack[Thread.current]
-  if tp.event == :call
-    unless ObserveTypes::INCLUDE_PRIVATE || tp.method_id == :initialize
-      vis_owner = tp.defined_class
-      next if vis_owner.private_method_defined?(tp.method_id) || vis_owner.protected_method_defined?(tp.method_id)
-    end
-    d = ObserveTypes.data[key]; d[:n] += 1
-    b = tp.binding
-    shape = []
-    call_params = {}
-    tp.parameters.each do |kind, pname|
-      next unless pname && !pname.to_s.start_with?("*", "&")
-      next if kind == :block
-      v = (b.local_variable_get(pname) rescue next)
-      label = case kind
-              when :opt then "?#{pname}"
-              when :rest then "*#{pname}"
-              when :key then "?#{pname}:"
-              when :keyreq then "#{pname}:"
-              when :keyrest then "**#{pname}"
-              else pname.to_s
-              end
-      t = case kind
-          when :rest then v.map { |e| ObserveTypes.type_of(e) }
-          when :keyrest then v.values.map { |e| ObserveTypes.type_of(e) }
-          else [ObserveTypes.type_of(v)]
-          end
-      (d[:params][label] ||= Set.new).merge(t.empty? ? ["(none)"] : t)
-      d[:kinds][label] = [kind.to_s, pname.to_s]
-      call_params[label] = t
-      shape << (kind == :rest ? t.join(", ") : "#{label =~ /:$/ ? label + ' ' : ''}#{t.join(', ')}") unless t.empty?
-    end
-    blk = (b.eval("block_given?") rescue nil) ? "yes" : "no"
-    d[:block] << blk
-    st << { key: key, shape: "(#{shape.join(', ')})#{blk == 'yes' ? ' {}' : ''}", params: call_params, blk: blk,
-            self: tp.self, path: tp.path, bdepth: 0, blk_val: ObserveTypes::UNSET }
-  else
-    next unless st.last && st.last[:key] == key
+  st = ObserveTypes.stack
+  if tp.event == :return
+    top = st.last
+    next unless top && top[:mid] == tp.method_id && top[:callee] == (tp.callee_id || tp.method_id) && top[:dc].equal?(tp.defined_class)
+
     frame = st.pop
+    key = frame[:key]
     d = ObserveTypes.data[key]
-    # While an exception unwinds the method, return_value is nil. The
-    # pending exception is cleared only by a :rescue event, so calls made
-    # while it propagates (rescue matching, ensure) do not hide it.
-    e = ObserveTypes::PENDING[Thread.current]
+    # While an exception (or throw) unwinds the method, return_value is nil.
     rv = tp.return_value
-    outcome = e && nil.equal?(rv) ? "raise #{e.class}" : ObserveTypes.type_of(rv)
+    e = frame[:exc]
+    outcome = if e && nil.equal?(rv)
+                e.equal?(ObserveTypes::THROW) ? "throw" : "raise #{e.class}"
+              else
+                ObserveTypes.type_of(rv)
+              end
     d[:ret] << outcome
-    unless outcome.start_with?("raise ")
+    unless outcome.start_with?("raise ") || outcome == "throw"
       ok = d[:ok]; ok[:n] += 1; ok[:ret] << outcome; ok[:block] << frame[:blk]
       ok[:ret_nb] << outcome if frame[:blk] == "no"
       frame[:params].each { |l, ts| (ok[:params][l] ||= Set.new).merge(ts) }
@@ -198,7 +280,82 @@ ObserveTypes::TP = TracePoint.new(:call, :return, :raise, :rescue, :b_call, :b_r
       end
     end
     d[:shapes][frame[:shape]] << outcome if d[:shapes].size < 30 || d[:shapes].key?(frame[:shape])
+    next
   end
+  owner = ObserveTypes.owner_name(tp) rescue nil
+  next unless owner && ObserveTypes.match?(owner[0])
+
+  dc = tp.defined_class
+  mid = tp.method_id
+  callee = tp.callee_id || mid
+  name = mid
+  unless ObserveTypes::INCLUDE_PRIVATE || mid == :initialize
+    # Visibility of the name it was called by: a public alias of a private
+    # method is public (and is recorded under the alias).
+    next if dc.private_method_defined?(callee) || dc.protected_method_defined?(callee)
+
+    name = callee if callee != mid && (dc.private_method_defined?(mid) || dc.protected_method_defined?(mid))
+  end
+  key = "#{owner[0]}#{owner[1]}#{name}"
+  d = ObserveTypes.data[key]; d[:n] += 1
+  b = tp.binding
+  shape = []
+  call_params = {}
+  blk_param = nil
+  tp.parameters.each do |kind, pname|
+    if kind == :block
+      blk_param = pname && pname != :& ? pname : :anonymous
+      next
+    end
+    # Anonymous `*`, `**` and `...`: their values cannot be read; keep the
+    # parameter so drafts do not lose it.
+    if pname.nil? || %i[* **].include?(pname)
+      next unless %i[rest keyrest].include?(kind)
+
+      label = kind == :rest ? "*" : "**"
+      (d[:params][label] ||= Set.new) << "untyped"
+      d[:kinds][label] = [kind.to_s, ""]
+      call_params[label] = ["untyped"]
+      next
+    end
+    v = (b.local_variable_get(pname) rescue next)
+    label = case kind
+            when :opt then "?#{pname}"
+            when :rest then "*#{pname}"
+            when :key then "?#{pname}:"
+            when :keyreq then "#{pname}:"
+            when :keyrest then "**#{pname}"
+            else pname.to_s
+            end
+    t = case kind
+        when :rest then v.map { |e| ObserveTypes.type_of(e) }
+        when :keyrest then v.values.map { |e| ObserveTypes.type_of(e) }
+        else [ObserveTypes.type_of(v)]
+        end
+    (d[:params][label] ||= Set.new).merge(t.empty? ? ["(none)"] : t)
+    d[:kinds][label] = [kind.to_s, pname.to_s]
+    call_params[label] = t
+    shape << (kind == :rest ? t.join(", ") : "#{label =~ /:$/ ? label + ' ' : ''}#{t.join(', ')}") unless t.empty?
+  end
+  # The block: from the & parameter when there is one; a define_method
+  # method without one cannot take a block (block_given? there would read
+  # the block of the method that called define_method).
+  proc_obj = nil
+  given = if blk_param && blk_param != :anonymous
+            proc_obj = (b.local_variable_get(blk_param) rescue nil)
+            !proc_obj.nil?
+          elsif ObserveTypes.bmethod?(tp)
+            false
+          else
+            (b.eval("block_given?") rescue false)
+          end
+  blk = given ? "yes" : "no"
+  d[:block] << blk
+  caller_path = caller_locations(2, 1)&.first&.path.to_s
+  st << { key: key, mid: mid, callee: callee, dc: dc,
+          shape: "(#{shape.join(', ')})#{blk == 'yes' ? ' {}' : ''}", params: call_params, blk: blk,
+          self: tp.self, path: tp.path, bdepth: 0, blk_val: ObserveTypes::UNSET, exc: nil,
+          from_lib: ObserveTypes.lib?(caller_path), proc: proc_obj, foreign_blocks: 0 }
 end
 ObserveTypes::TP.enable
 at_exit do

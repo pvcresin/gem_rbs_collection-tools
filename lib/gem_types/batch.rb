@@ -14,6 +14,22 @@ module GemTypes
 
     STEPS = %w[prepare install tests namespace collect draft].freeze
 
+    # A test run that takes longer than this (seconds) is stopped: some
+    # suites hang on a server or a prompt without their usual environment.
+
+    # Required files whose gem is not named after the path.
+    REQUIRE_GEMS = {
+      "test/unit" => "test-unit", "active_support" => "activesupport", "active_record" => "activerecord",
+      "active_model" => "activemodel", "action_controller" => "actionpack", "action_dispatch" => "actionpack",
+      "action_view" => "actionview", "rack/test" => "rack-test", "minitest/reporters" => "minitest-reporters",
+      "rspec/its" => "rspec-its", "rspec/collection_matchers" => "rspec-collection_matchers",
+      "mocha/api" => "mocha", "mocha/minitest" => "mocha", "mocha/setup" => "mocha", "webmock/rspec" => "webmock",
+      "webmock/minitest" => "webmock", "shoulda/context" => "shoulda-context", "test/unit/rr" => "test-unit-rr",
+      "racc/parser" => "racc",
+      # the suite's own helpers, not gems
+      "spec_helper" => nil, "test_helper" => nil, "helper" => nil
+    }.freeze
+
     # Signs of RSpec 2 era specs failing on RSpec 3.
     RSPEC2 = /undefined method [`']stub!'|any_number_of_times|:stdlib is not supported|undefined method [`']mock' for|and_return\(\)/
 
@@ -83,7 +99,7 @@ module GemTypes
       return r unless step.("tests", test_cmd, "no test command guessed")
 
       r.test_cmd = test_cmd
-      r.version = Dir[File.join(w, "*.gem")].map { |f| File.basename(f, ".gem")[/-(\d+\.\d+)[^-]*\z/, 1] }.first
+      r.version = prepared_version(gem, w)
       counts, env = run_tests_with_fixes(w, env, test_cmd, logs)
       r.tests = "#{counts[:total]} #{counts[:unit]}, #{counts[:failed]} failing"
       return r unless step.("tests", counts[:total].positive?, "the tests did not run (see run/tests.log)")
@@ -114,8 +130,8 @@ module GemTypes
     end
 
     # Runs the tests; when the log shows a known environment problem, fixes
-    # it and runs again (up to 4 times), keeping a fix only if more tests
-    # run or fewer fail:
+    # it and runs again (up to 4 times), keeping a fix only if it helps
+    # (see better?):
     #   RSpec 2 era specs         -> libexec/rspec2_compat.rb in RUBYOPT
     #   uninitialized MiniTest    -> libexec/minitest_compat.rb (minitest 6 dropped it)
     #   obj.must_equal on minitest 6 -> pin minitest ~> 5.0
@@ -124,17 +140,21 @@ module GemTypes
     # Environment fixes are saved in gem-types.json for later commands.
     def run_tests_with_fixes(w, env, test_cmd, logs)
       log = File.join(logs, "tests.log")
-      sh(env, test_cmd, File.join(w, "repo"), log)
+      root = gem_root(w)
+      sh(env, timed(test_cmd), root, log)
       text = File.read(log, encoding: "UTF-8")
       counts = Verify.test_counts(text)
       tried = []
-      4.times do |i|
-        break if counts[:total].positive? && counts[:failed].zero?
+      # Up to 4 test runs; a gem that does not install (a guessed name such
+      # as racc-parser for racc/parser) costs no run.
+      runs = 0
+      12.times do
+        break if runs >= 4 || (counts[:total].positive? && counts[:failed].zero?)
 
-        fix = next_fix(text, env, test_cmd, tried) or break
-        tried << fix[:name]
         gemfile = File.join(w, "env", "Gemfile")
         before = File.read(gemfile)
+        fix = next_fix(text, env, test_cmd, tried, root: root, gemfile: before) or break
+        tried << fix[:name]
         new_env = env.merge(fix[:env] || {})
         if fix[:gem]
           kept = before.lines.reject { |l| l.match?(/\A\s*gem\s+["']#{Regexp.escape(fix[:gem])}["']/) }.join
@@ -145,14 +165,14 @@ module GemTypes
             next
           end
         end
-        log2 = File.join(logs, "tests-fix#{i + 1}-#{fix[:name].tr('^a-zA-Z0-9_-', '_')}.log")
-        sh(new_env, test_cmd, File.join(w, "repo"), log2)
+        runs += 1
+        log2 = File.join(logs, "tests-fix#{runs}-#{fix[:name].tr('^a-zA-Z0-9_-', '_')}.log")
+        sh(new_env, timed(test_cmd), root, log2)
         t2 = File.read(log2, encoding: "UTF-8")
         c2 = Verify.test_counts(t2)
-        if c2[:total] > counts[:total] || (c2[:total] == counts[:total] && c2[:failed] < counts[:failed]) ||
-           (c2[:total] == counts[:total] && t2 != text && fix[:gem])
+        if better?(counts, c2, changed: t2 != text && !fix[:gem].nil?)
           counts, text, env = c2, t2, new_env
-          File.write(File.join(w, "gem-types.json"), JSON.pretty_generate(env: env, test_cmd: test_cmd))
+          File.write(File.join(w, "gem-types.json"), JSON.pretty_generate(repo: root, env: env, test_cmd: test_cmd))
         elsif fix[:gem]
           File.write(gemfile, before)
         end
@@ -160,7 +180,23 @@ module GemTypes
       [counts, env]
     end
 
-    def next_fix(text, env, test_cmd, tried)
+    # Whether a run with a fix (c2) is better than the run without (c1).
+    # When no test ran before: tests run now, or (a gem was added) the
+    # output changed, e.g. to the next missing file. Otherwise failures must
+    # not increase nor passes decrease, and more tests run, fewer fail, or
+    # (a gem was added) the output changed.
+    def better?(c1, c2, changed: false)
+      return c2[:total].positive? || (c2[:total].zero? && changed) if c1[:total].zero?
+      return false if c2[:failed] > c1[:failed] || c2[:total] - c2[:failed] < c1[:total] - c1[:failed]
+
+      c2[:total] > c1[:total] || c2[:failed] < c1[:failed] || changed
+    end
+
+    # The next environment fix to try for a test log, or nil. root is the
+    # gem's checkout (files the tests require from it are not gems);
+    # gemfile the env/Gemfile text (gems already there are not rewritten,
+    # except to pin minitest 5).
+    def next_fix(text, env, test_cmd, tried, root: nil, gemfile: "")
       cands = []
       if test_cmd.include?("rspec") && text.match?(RSPEC2)
         rubyopt = [env["RUBYOPT"], "-r#{File.join(LIBEXEC, 'rspec2_compat.rb')}"].compact.join(" ")
@@ -172,13 +208,27 @@ module GemTypes
       end
       # minitest 6 removed the expectations on Object (obj.must_equal ...).
       cands << { name: "minitest5", gem: "minitest", req: "~> 5.0" } if text.match?(/undefined method [`'](must|wont)_\w+'/)
+      in_gemfile = ->(g) { gemfile.match?(/^\s*gem\s+["']#{Regexp.escape(g)}["']/) }
+      add = ->(g) { cands << { name: "gem-#{g}", gem: g } unless in_gemfile.(g) || cands.any? { _1[:gem] == g } }
       text.scan(/cannot load such file -- ([\w\-\/]+)/).flatten.uniq.each do |f|
         next if f.start_with?(".", "/")
+        next if root && %w[lib test spec].any? { |d| File.exist?(File.join(root, d, "#{f}.rb")) || File.directory?(File.join(root, d, f)) }
 
-        cands << { name: "gem-#{f.split('/').first}", gem: f.split("/").first }
+        gem_names_for(f).each(&add)
       end
-      text.scan(/command not found: ([\w\-]+)/).flatten.uniq.each { |c| cands << { name: "gem-#{c}", gem: c } }
+      text.scan(/command not found: ([\w\-]+)/).flatten.uniq.each(&add)
       cands.find { |c| !tried.include?(c[:name]) }
+    end
+
+    # Gems that may provide a required path, most likely first:
+    # minitest/reporters -> minitest-reporters, minitest; test/unit -> test-unit.
+    def gem_names_for(path)
+      return [REQUIRE_GEMS[path]].compact if REQUIRE_GEMS.key?(path)
+
+      parts = path.split("/")
+      names = parts.size.downto(1).map { |n| parts.first(n).join("-") }
+      names.insert(1, parts.join("_")) if parts.size > 1
+      names.uniq
     end
 
     # bundle install; on failure, drop the repo-Gemfile gems the log names
@@ -227,27 +277,89 @@ module GemTypes
     end
     public :workflow_args
 
-    # What to require (a lib file named like the gem) and the top-level
-    # constants that requiring it defines from the gem's own lib.
+    # The gem's root in the checkout: repo/, or repo/<subdir> for a gem in
+    # a monorepo (prepare_gem.sh writes repo_dir).
+    def gem_root(w)
+      f = File.join(w, "repo_dir")
+      dir = File.read(f).strip if File.exist?(f)
+      dir && !dir.empty? && Dir.exist?(dir) ? dir : File.join(w, "repo")
+    end
+
+    def prepared_version(gem, w)
+      f = File.join(w, "version")
+      return File.read(f).strip if File.exist?(f)
+
+      Dir[File.join(w, "#{gem}-*.gem")].map { |p| File.basename(p, ".gem").delete_prefix("#{gem}-") }
+                                       .max_by { |v| Gem::Version.new(v[/\A[\d.]+/] || "0") }
+    end
+
+    def timed(cmd) = GemTypes.timed(cmd)
+
+    # What to require (a lib file named like the gem) and the outermost
+    # modules and top-level constants that requiring it defines from the
+    # gem's own lib: Net::HTTP::Persistent for net-http-persistent (Net and
+    # Net::HTTP existed before), Rack::Protection for rack-protection.
     def namespace(gem, w, env)
-      lib = File.join(w, "repo", "lib")
+      root = gem_root(w)
+      lib = File.join(root, "lib")
       cands = [gem, gem.tr("-", "/"), gem.tr("-", "_")].uniq
       req = cands.find { |c| File.exist?(File.join(lib, "#{c}.rb")) } ||
             Dir[File.join(lib, "*.rb")].map { |f| File.basename(f, ".rb") }.first
       return [nil, []] unless req
 
-      script = <<~RUBY
-        before = Object.constants
+      out = File.join(w, "run", "namespace.txt")
+      sh(env.merge("RUBYOPT" => "-I#{lib}"), "bundle exec ruby -e #{namespace_script(req, lib, gem).shellescape} > #{out.shellescape}",
+         root, File.join(w, "run", "namespace.log"))
+      [req, File.exist?(out) ? File.readlines(out, chomp: true).reject(&:empty?).sort : []]
+    end
+
+    # Ruby that prints those names. A constant defined by the gem's own
+    # native extension (FFI, from ffi_c.so of the installed ffi gem) counts
+    # as the gem's when the gem's lib adds to it.
+    def namespace_script(req, lib, gem = nil)
+      native = gem ? %r{/#{Regexp.escape(gem)}-\d[^/]*/.*\.(so|bundle|dll)\z} : /(?!)/
+      <<~RUBY
+        name_of = Module.instance_method(:name)
+        before_consts = Object.constants
+        before = {}
+        ObjectSpace.each_object(Module) { |m| before[m.__id__] = true }
         require #{req.dump}
         lib = #{File.join(lib, '').dump}
-        puts (Object.constants - before).select { |c|
-          (Object.const_source_location(c.to_s) || []).first.to_s.start_with?(lib)
-        }
+        native = Regexp.new(#{native.source.dump})
+        loc_of = lambda do |mod, c|
+          (mod.const_source_location(c.to_s) rescue nil).to_a.first.to_s
+        end
+        in_lib = lambda do |n|
+          loc = loc_of.(Object, n)
+          next true if loc.start_with?(lib)
+          next false unless loc.match?(native)
+
+          mod = Object.const_get(n)
+          mod.is_a?(Module) && mod.constants(false).any? { |c| loc_of.(mod, c).start_with?(lib) }
+        rescue StandardError, NameError
+          false
+        end
+        names = (Object.constants - before_consts).map(&:to_s)
+        ObjectSpace.each_object(Module) do |m|
+          next if before[m.__id__]
+
+          n = name_of.bind_call(m)
+          names << n if n && n.match?(/\\A[A-Z]\\w*(::[A-Z]\\w*)*\\z/)
+        end
+        # A namespace the gem shares with others (Rack, when rack-protection's
+        # lib happens to open it first) holds constants defined elsewhere.
+        shared = lambda do |n|
+          mod = Object.const_get(n)
+          mod.is_a?(Module) && mod.constants(false).any? do |c|
+            loc = loc_of.(mod, c)
+            !loc.empty? && !loc.start_with?(lib) && !loc.match?(native)
+          end
+        rescue StandardError, NameError
+          false
+        end
+        names = names.uniq.select { |n| in_lib.(n) }.reject { |n| shared.(n) }
+        puts names.reject { |n| names.any? { |o| n.start_with?("\#{o}::") } }
       RUBY
-      out = File.join(w, "run", "namespace.txt")
-      sh(env.merge("RUBYOPT" => "-I#{lib}"), "bundle exec ruby -e #{script.shellescape} > #{out.shellescape}",
-         File.join(w, "repo"), File.join(w, "run", "namespace.log"))
-      [req, File.exist?(out) ? File.readlines(out, chomp: true).reject(&:empty?).sort : []]
     end
 
     def sh(env, cmd, chdir, log)

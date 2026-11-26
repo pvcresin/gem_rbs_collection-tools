@@ -46,4 +46,10 @@ ro="-I$RBSLIB -rrbs/test/setup -r$HERE/rbs_hook_fix.rb"
 if [ -n "$OUT" ]; then export RBS_ERR_OUT="$(realpath -m "$OUT")"; rm -f "$RBS_ERR_OUT.checked.tsv" "$RBS_ERR_OUT.errors.tsv"; ro="$ro -r$HERE/log_errors.rb"; fi
 if [ -n "$CALLS" ]; then export TRACE_OUT="$(realpath -m "$CALLS")"; rm -f "$TRACE_OUT"; ro="$ro -r$HERE/trace_calls.rb"; fi
 export RUBYOPT="$ro ${RUBYOPT:-}"
+# `bundle exec <cmd>` normally loads <cmd> inside the bundle process, where
+# RUBYOPT's -r files (rbs, which needs psych etc.) were already required
+# before Bundler.setup, so a Gemfile pinning another version of a default
+# gem fails ("already activated psych 5.1.2, but your Gemfile requires
+# psych 3.1.0"). Exec instead: Bundler.setup then runs before RUBYOPT.
+export BUNDLE_DISABLE_EXEC_LOAD=true
 exec "$@"

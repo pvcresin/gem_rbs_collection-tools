@@ -13,7 +13,7 @@ module GemTypes
     def build(config, workdir, sig)
       gem = Dir[File.join(workdir, "*.gem")].map { |f| File.basename(f, ".gem").sub(/-[^-]+\z/, "") }.first || "?"
       ver = File.basename(File.directory?(sig) ? sig : File.dirname(sig))
-      rbs = RbsReader.read_files(Verify.sig_files(sig))
+      rbs = RbsReader.read_files(RbsReader.sig_files(sig))
       defs = DefIndex.new(config.lib_paths)
       out = ["Add RBS for #{gem} #{ver}", "", "Covers the public API of #{gem} #{ver}:", ""]
       rbs.methods.keys.group_by { |k| GemTypes.split_key(k).first }.sort.each do |owner, keys|
@@ -23,7 +23,7 @@ module GemTypes
       end
       # The private instance copies made by module_function are not API left out.
       hidden = defs.hidden.reject { |_, why| why == "module_function" }.keys.select { |k| config.in_ns?(k) }.sort
-      public_missing = (defs.map { |d| d[:key] } | defs.attrs.keys)
+      public_missing = (defs.map { |d| d[:key] } | Update.attr_keys(defs))
                        .reject { |k| rbs.methods.key?(k) || defs.hidden.key?(k) || !config.in_ns?(k) || k.end_with?("#initialize") }
                        .reject { |k| HOOKS.include?(GemTypes.split_key(k).last) }
                        .sort
@@ -47,8 +47,12 @@ module GemTypes
       end
       if v
         c = v["checked"]
-        tail = v["errors"].empty? ? "no type errors" : "#{v['errors'].size} distinct type errors (explain: negative tests, test doubles, ...)"
-        out << wrap("- Ran the gem's own test suite with runtime type checking: #{c['total']} #{c['unit']}, #{v['checks']} type checks, #{tail}.")
+        if v.key?("suite_complete") && !v["suite_complete"]
+          out << wrap("- CHECKED RUN INCOMPLETE (#{Array(v['incomplete']).join('; ')}): fix the run and rerun `gem-types verify` before claiming a test suite result.")
+        else
+          tail = v["errors"].empty? ? "no type errors" : "#{v['errors'].size} distinct type errors (explain: negative tests, test doubles, ...)"
+          out << wrap("- Ran the gem's own test suite with runtime type checking: #{c['total']} #{c['unit']}, #{v['checks']} type checks, #{tail}.")
+        end
       else
         out << "- (run `gem-types verify` for the test suite numbers)"
       end

@@ -63,11 +63,13 @@ module GemTypes
       def run_tests(hook, env)
         raise "#{name}: --test-cmd is required" unless config.test_cmd
 
-        rubyopt = ["-r#{hook}", config.env["RUBYOPT"], ENV.fetch("RUBYOPT", nil)].compact.join(" ")
+        # The caller's RUBYOPT without this tool's bundle (-rbundler/setup).
+        outer = defined?(Bundler) ? Bundler.unbundled_env["RUBYOPT"] : ENV.fetch("RUBYOPT", nil)
+        rubyopt = ["-r#{hook}", config.env["RUBYOPT"], outer].compact.reject(&:empty?).join(" ")
         # `bundle exec rspec` normally loads rspec inside the bundle process,
         # where the hooks have skipped themselves; make it exec instead.
         full = config.env.merge(env).merge("RUBYOPT" => rubyopt, "BUNDLE_DISABLE_EXEC_LOAD" => "true")
-        ok = sh(full, config.test_cmd, chdir: config.repo, log: File.join(config.out, "#{name}.log"))
+        ok = sh(full, GemTypes.timed(config.test_cmd), chdir: config.repo, log: File.join(config.out, "#{name}.log"))
         warn "#{name}: no output recorded (did the test command run Ruby?)" if Dir[File.join(dir, "**", "*")].none? { |f| File.file?(f) }
         ok
       end
@@ -104,7 +106,9 @@ module GemTypes
             e.block_self |= d["block_self"] || []
             e.returns_without_block |= d["returns_without_block"] || []
             d["kinds"].each do |label, (kind, pname)|
-              p = e.params.find { |x| x[:name] == pname } || (e.params << { kind: kind, name: pname, types: [] }).last
+              # Anonymous `*` / `**` (from `...` too) have an empty name.
+              p = e.params.find { |x| x[:name] == pname && (!pname.empty? || x[:kind] == kind) } ||
+                  (e.params << { kind: kind, name: pname, types: [] }).last
               p[:types] |= d["params"][label] || []
             end
           end
@@ -172,11 +176,19 @@ module GemTypes
             seen = args[[d[:file], p[:line], p[:name]]]
             { kind: p[:kind], name: p[:name], types: seen.keys.map { |t| lumi_type(t) }.uniq }
           end
-          ret = d[:lasts].flat_map { |loc| exprs[loc].keys.map { |t| lumi_type(t) } }.uniq
-          ret |= ["nil"] if d[:implicit_nil] && !ret.empty?
+          ret = d[:lasts].flat_map { |loc| exprs[loc].keys.map { |t| lumi_type(t) } }
+          ret += (d[:falsy_lasts] || []).flat_map { |loc| exprs[loc].keys.map { |t| lumi_type(t) } & %w[nil bool] }
+          ret += (d[:truthy_lasts] || []).flat_map { |loc| exprs[loc].keys.map { |t| lumi_type(t) } - ["nil"] }
+          ret.uniq!
+          # Calls: the most argument events of one parameter (each call
+          # records every parameter once).
+          calls = d[:params].map { |p| args[[d[:file], p[:line], p[:name]]].values.sum }.max || 0
           next if params.all? { |p| p[:types].empty? } && ret.empty?
 
-          calls = params.map { |p| args[[d[:file], p[:line], p[:name]]].values.sum }.max || 0
+          # Literals and `return a, b` leave no expression event: take their
+          # types from the source, once the method is known to have run.
+          ret |= d[:fixed_returns] || [] if calls.positive? || !ret.empty?
+          ret |= ["nil"] if d[:implicit_nil] && !ret.empty?
           out[d[:key]] = Evidence.new(source: name, params: params.reject { |p| p[:kind] == "block" },
                                       block: params.any? { |p| p[:kind] == "block" } ? %w[no yes] : [],
                                       returns: ret, raises: [], calls: calls)
@@ -282,11 +294,15 @@ module GemTypes
     class Prototype < Typeprof
       def run
         FileUtils.mkdir_p(config.out)
-        reqs = config.requires.map { |r| "-r #{r.shellescape}" }.join(" ")
+        # After the gem, load what it registered with `autoload` (classes
+        # loaded lazily are otherwise missing from the prototype).
+        eager = File.join(LIBEXEC, "eager_load.rb")
+        reqs = (config.requires + [eager]).map { |r| "-r #{r.shellescape}" }.join(" ")
         pats = config.ns.flat_map { |n| [n, "#{n}::*"] }.map(&:shellescape).join(" ")
         # `rbs -I` is for signatures; the library goes on Ruby's load path.
         rubyopt = [config.lib_paths.map { |d| "-I#{d}" }, config.env["RUBYOPT"]].flatten.compact.join(" ")
-        sh(config.env.merge("RUBYOPT" => rubyopt), "bundle exec rbs prototype runtime #{reqs} #{pats} " \
+        sh(config.env.merge("RUBYOPT" => rubyopt, "GEM_TYPES_EAGER_NS" => config.ns.join(","),
+                            "GEM_TYPES_EAGER_LIB" => config.lib_paths.join(":")), "bundle exec rbs prototype runtime #{reqs} #{pats} " \
                        "> #{File.join(config.out, 'prototype.rbs').shellescape}",
            chdir: config.repo, log: File.join(config.out, "prototype.log"))
       end
@@ -310,9 +326,17 @@ module GemTypes
       @defs = []
       @attrs = {}
       @hidden = {}
+      @internal_ns = {}
       dirs.flat_map { |d| Dir[File.join(d, "**/*.rb")] }.each do |file|
         result = Prism.parse_file(file)
-        @comments = result.comments.to_h { |c| [c.location.start_line, c.location.slice] }
+        # Comments on lines of their own form the doc block above a
+        # definition; a trailing comment (`def x # :nodoc:`) belongs to the
+        # definition on its own line only.
+        @comments = {}
+        @trailing = {}
+        result.comments.each do |c|
+          (c.trailing? ? @trailing : @comments)[c.location.start_line] = c.location.slice
+        end
         visit(result.value, [], false, file)
       end
     end
@@ -323,27 +347,60 @@ module GemTypes
 
     VISIBILITY = %i[private protected public].freeze
     ATTRS = { attr_reader: "reader", attr_writer: "writer", attr_accessor: "accessor", attr: "reader" }.freeze
+    # Statements that do not open a new scope: a `private` inside them still
+    # applies to the rest of the class body.
+    TRANSPARENT = [Prism::IfNode, Prism::UnlessNode, Prism::ElseNode, Prism::BeginNode,
+                   Prism::StatementsNode, Prism::ParenthesesNode].freeze
+
+    # Visibility state of one class body.
+    Section = Struct.new(:visibility, :module_function)
 
     def visit(node, ns, singleton, file)
       case node
       when Prism::ClassNode, Prism::ModuleNode
         inner = nest(ns, node.constant_path.slice)
-        @internal_ns ||= {}
-        @internal_ns[inner.join("::")] = true if internal_doc?(doc_above(node.location.start_line))
+        line = node.location.start_line
+        @internal_ns[inner.join("::")] = true if internal_doc?(doc_above(line)) || internal_doc?(@trailing[line].to_s)
         struct_members(node.superclass, inner, file) if node.is_a?(Prism::ClassNode)
         node.body && visit_body(node.body, inner, false, file)
         return
       when Prism::SingletonClassNode
-        node.body && visit_body(node.body, ns, node.expression.is_a?(Prism::SelfNode), file)
+        # `class << self` and `class << Foo`: singleton methods of that module.
+        target = receiver_ns(ns, node.expression)
+        node.body && visit_body(node.body, target || ns, !target.nil?, file)
         return
       when Prism::ConstantWriteNode, Prism::ConstantPathWriteNode
         name = node.is_a?(Prism::ConstantWriteNode) ? node.name.to_s : node.target.slice
         return if struct_members(node.value, nest(ns, name), file)
       when Prism::DefNode
-        add_def(node, ns, singleton || node.receiver.is_a?(Prism::SelfNode), file)
+        def_node(node, ns, singleton, file)
         return
       end
       node.compact_child_nodes.each { |c| visit(c, ns, singleton, file) }
+    end
+
+    # `def x` / `def self.x` / `def Const.x`: any receiver makes it a
+    # singleton method (of the named module when it is one we can resolve).
+    def def_node(node, ns, singleton, file)
+      return add_def(node, ns, singleton, file) unless node.receiver
+
+      add_def(node, receiver_ns(ns, node.receiver) || ns, true, file)
+    end
+
+    # The namespace a `self` / constant expression refers to, or nil when it
+    # is something else (a local variable, a method call).
+    def receiver_ns(ns, expr)
+      case expr
+      when Prism::SelfNode then ns
+      when Prism::ConstantReadNode, Prism::ConstantPathNode
+        name = expr.slice
+        return [name.delete_prefix("::")] if name.start_with?("::")
+
+        parts = name.split("::")
+        return ns if parts.size <= ns.size && ns.last(parts.size) == parts
+
+        nest(ns, name)
+      end
     end
 
     # The full name of `class Name` written inside `ns`. A qualified name
@@ -359,73 +416,153 @@ module GemTypes
     end
 
     # A class body in order, tracking `private` / `module_function` sections.
-    def visit_body(body, ns, singleton, file)
-      stmts = body.is_a?(Prism::StatementsNode) ? body.body : [body]
-      stmts = body.statements&.body || [] if body.is_a?(Prism::BeginNode)
-      section = :public
-      module_function = false
-      stmts.each do |st|
-        if st.is_a?(Prism::CallNode) && st.receiver.nil?
-          args = st.arguments&.arguments || []
-          if VISIBILITY.include?(st.name)
-            if args.empty?
-              section = st.name
-            else
-              args.each do |a|
-                if a.is_a?(Prism::DefNode)
-                  add_def(a, ns, singleton || a.receiver.is_a?(Prism::SelfNode), file)
-                  hide(ns, singleton, a.name, st.name)
-                elsif a.respond_to?(:unescaped)
-                  hide(ns, singleton, a.unescaped, st.name)
+    def visit_body(body, ns, singleton, file, section = Section.new(:public, false))
+      stmts = case body
+              when Prism::StatementsNode then body.body
+              when Prism::BeginNode then body.statements&.body || []
+              else [body]
+              end
+      stmts.each { |st| statement(st, ns, singleton, file, section) }
+    end
+
+    # One statement of a class body. Returns the names of the methods it
+    # defines (for `private memoize def x` and the like).
+    def statement(st, ns, singleton, file, section)
+      if st.is_a?(Prism::CallNode) && st.receiver.nil?
+        args = st.arguments&.arguments || []
+        if VISIBILITY.include?(st.name)
+          if args.empty?
+            section.visibility = st.name
+            section.module_function = false
+          else
+            args.each { |a| wrapped(a, ns, singleton, file).each { |n| hide(ns, singleton, n, st.name) } }
+          end
+          return []
+        elsif st.name == :private_class_method
+          args.each do |a|
+            names = a.is_a?(Prism::DefNode) ? (add_def(a, ns, true, file); [a.name]) : wrapped(a, ns, true, file)
+            names.each { |n| hide(ns, true, n, :private) }
+          end
+          return []
+        elsif st.name == :module_function
+          if args.empty?
+            section.module_function = true
+          else
+            args.each do |a|
+              if a.is_a?(Prism::DefNode)
+                add_def(a, ns, false, file)
+                add_def(a, ns, true, file)
+                hide(ns, false, a.name, :module_function)
+              else
+                wrapped(a, ns, false, file).each do |n|
+                  copy_to_singleton(ns, n)
+                  hide(ns, false, n, :module_function)
                 end
               end
             end
-            next
-          elsif st.name == :private_class_method
-            args.each { |a| hide(ns, true, a.is_a?(Prism::DefNode) ? a.name : a.unescaped, :private) if a.is_a?(Prism::DefNode) || a.respond_to?(:unescaped) }
-            args.grep(Prism::DefNode).each { |a| add_def(a, ns, true, file) }
-            next
-          elsif st.name == :module_function
-            if args.empty?
-              module_function = true
-            else
-              args.each { |a| hide(ns, false, a.unescaped, :module_function) if a.respond_to?(:unescaped) }
-            end
-            next
-          elsif ATTRS.key?(st.name)
-            args.each do |a|
-              next unless a.respond_to?(:unescaped)
+          end
+          return []
+        elsif ATTRS.key?(st.name)
+          names = []
+          args.each do |a|
+            next unless a.respond_to?(:unescaped)
 
-              add_attr(ns, singleton, a.unescaped, ATTRS[st.name], file, st.location.start_line)
-              hide(ns, singleton, a.unescaped, section) unless section == :public
-            end
-            next
+            add_attr(ns, singleton, a.unescaped, ATTRS[st.name], file, st.location.start_line)
+            hide(ns, singleton, a.unescaped, section.visibility) unless section.visibility == :public
+            names << a.unescaped
           end
-        end
-        if st.is_a?(Prism::DefNode)
-          sing = singleton || st.receiver.is_a?(Prism::SelfNode)
-          add_def(st, ns, sing, file)
-          if module_function && !sing
-            add_def(st, ns, true, file)
-            hide(ns, false, st.name, :module_function)
-          elsif section != :public && !st.receiver
-            hide(ns, singleton, st.name, section)
-          end
-        else
-          visit(st, ns, singleton, file)
+          return names
         end
       end
+      case st
+      when Prism::DefNode
+        def_node(st, ns, singleton, file)
+        if st.receiver
+          # visibility sections do not apply to `def self.x`
+        elsif section.module_function && !singleton
+          add_def(st, ns, true, file)
+          hide(ns, false, st.name, :module_function)
+        elsif section.visibility != :public
+          hide(ns, singleton, st.name, section.visibility)
+        end
+        [st.name]
+      when *TRANSPARENT
+        names = []
+        st.compact_child_nodes.each do |c|
+          if c.is_a?(Prism::StatementsNode)
+            c.body.each { |x| names.concat(statement(x, ns, singleton, file, section)) }
+          elsif TRANSPARENT.include?(c.class)
+            names.concat(statement(c, ns, singleton, file, section))
+          else
+            visit(c, ns, singleton, file)
+          end
+        end
+        names
+      else
+        visit(st, ns, singleton, file)
+        defined_names(st)
+      end
+    end
+
+    # The argument of `private x` / `module_function x`: a Symbol or String
+    # names a method; a def or a call wrapping one (`private memoize def x`,
+    # `private attr_reader :x`) is indexed and its names returned.
+    def wrapped(arg, ns, singleton, file)
+      case arg
+      when Prism::SymbolNode, Prism::StringNode then [arg.unescaped]
+      when Prism::DefNode
+        add_def(arg, ns, singleton, file)
+        [arg.name]
+      when Prism::ArrayNode then arg.elements.flat_map { |e| wrapped(e, ns, singleton, file) }
+      else
+        statement(arg, ns, singleton, file, Section.new(:public, false))
+      end
+    end
+
+    # Method names defined by defs and attr_* calls inside a node (not inside
+    # nested classes or modules).
+    def defined_names(node)
+      out = []
+      stack = [node]
+      while (n = stack.pop)
+        case n
+        when Prism::ClassNode, Prism::ModuleNode, Prism::SingletonClassNode then next
+        when Prism::DefNode then out << n.name.to_s
+        when Prism::CallNode
+          if n.receiver.nil? && ATTRS.key?(n.name)
+            (n.arguments&.arguments || []).each { |a| out << a.unescaped if a.respond_to?(:unescaped) }
+          end
+        end
+        stack.concat(n.compact_child_nodes) unless n.is_a?(Prism::DefNode)
+      end
+      out
+    end
+
+    # `module_function :x`: x also becomes a singleton method.
+    def copy_to_singleton(ns, name)
+      return if ns.empty?
+
+      base = "#{ns.join('::')}##{name}"
+      d = @defs.reverse_each.find { |x| x[:key] == base } or return
+      skey = "#{ns.join('::')}.#{name}"
+      @defs << d.merge(key: skey) unless @defs.any? { |x| x[:key] == skey }
     end
 
     def struct_members(node, ns, file)
       return unless node.is_a?(Prism::CallNode) && node.receiver
-      kind = { %w[Struct new] => "accessor", %w[Data define] => "reader" }[[node.receiver.slice.delete_prefix("::"), node.name.to_s]]
+      recv = node.receiver.slice.delete_prefix("::")
+      kind = { %w[Struct new] => "accessor", %w[Data define] => "reader" }[[recv, node.name.to_s]]
+      # `K = Class.new do ... end`: the block is K's body.
+      kind ||= :body if %w[Class Module].include?(recv) && node.name == :new && node.block.is_a?(Prism::BlockNode)
       return unless kind
 
-      (node.arguments&.arguments || []).each do |a|
-        add_attr(ns, false, a.unescaped, kind, file, node.location.start_line) if a.is_a?(Prism::SymbolNode)
+      unless kind == :body
+        (node.arguments&.arguments || []).each do |a|
+          add_attr(ns, false, a.unescaped, kind, file, node.location.start_line) if a.is_a?(Prism::SymbolNode)
+        end
       end
-      node.block&.body && visit_body(node.block.body, ns, false, file)
+      blk = node.block
+      blk.body && visit_body(blk.body, ns, false, file) if blk.is_a?(Prism::BlockNode)
       true
     end
 
@@ -434,7 +571,7 @@ module GemTypes
 
       base = "#{ns.join('::')}#{singleton ? '.' : '#'}#{name}"
       @attrs[base] = { kind: kind, file: file, line: line }
-      if internal_ns?(ns)
+      if internal_ns?(ns) || internal_doc?(@trailing[line].to_s)
         @hidden[base] ||= "documented as internal"
         @hidden["#{base}="] ||= "documented as internal" unless kind == "reader"
       end
@@ -451,12 +588,10 @@ module GemTypes
     def internal_doc?(doc) = doc.match?(/@api\s+private|@private\b|:nodoc:/)
 
     def internal_ns?(ns)
-      return false unless @internal_ns
-
       ns.each_index.any? { |i| @internal_ns[ns[0..i].join("::")] }
     end
 
-    # The comment block right above a line.
+    # The comment block right above a line (comments on lines of their own).
     def doc_above(line)
       out = []
       l = line - 1
@@ -471,7 +606,10 @@ module GemTypes
       return if ns.empty?
 
       key = "#{ns.join('::')}#{singleton ? '.' : '#'}#{node.name}"
-      @hidden[key] ||= "documented as internal" if internal_doc?(doc_above(node.location.start_line)) || internal_ns?(ns)
+      line = node.location.start_line
+      if internal_doc?(doc_above(line)) || internal_doc?(@trailing[line].to_s) || internal_ns?(ns)
+        @hidden[key] ||= "documented as internal"
+      end
       params = []
       if (p = node.parameters)
         p.requireds.each { |x| params << param(x, "req") }
@@ -482,41 +620,86 @@ module GemTypes
         params << param(p.keyword_rest, "keyrest") if p.keyword_rest.respond_to?(:name) && p.keyword_rest.name
         params << param(p.block, "block") if p.block&.name
       end
-      tails, implicit_nil = tail_exprs(node.body)
-      lasts = tails.map { |t| l = t.location; [file, l.start_line, l.start_column, l.end_line, l.end_column] }
-      @defs << { key: key, file: file, line: node.location.start_line, end_line: node.location.end_line,
-                 params: params.compact, lasts: lasts, implicit_nil: implicit_nil,
+      tails, implicit_nil, fixed = tail_exprs(node.body)
+      loc = ->(t) { l = t.location; [file, l.start_line, l.start_column, l.end_line, l.end_column] }
+      # lasts: the value is returned; falsy_lasts / truthy_lasts: only when
+      # falsy / truthy (the left side of && / ||).
+      lasts, filtered = tails.partition { |t| !t.is_a?(Array) }
+      @defs << { key: key, file: file, line: line, end_line: node.location.end_line,
+                 params: params.compact, lasts: lasts.map(&loc), implicit_nil: implicit_nil, fixed_returns: fixed.uniq,
+                 falsy_lasts: filtered.filter_map { |n, f| loc.(n) if f == :falsy },
+                 truthy_lasts: filtered.filter_map { |n, f| loc.(n) if f == :truthy },
                  legacy_consts: legacy_consts(node.body) }
     end
 
+    # Types of literal nodes Lumitrace does not record a value for.
+    LITERALS = {
+      Prism::NilNode => "nil", Prism::TrueNode => "bool", Prism::FalseNode => "bool",
+      Prism::IntegerNode => "Integer", Prism::FloatNode => "Float", Prism::RationalNode => "Rational",
+      Prism::StringNode => "String", Prism::InterpolatedStringNode => "String", Prism::XStringNode => "String",
+      Prism::SymbolNode => "Symbol", Prism::InterpolatedSymbolNode => "Symbol",
+      Prism::RegularExpressionNode => "Regexp", Prism::InterpolatedRegularExpressionNode => "Regexp",
+      Prism::RangeNode => "Range[untyped]", Prism::ArrayNode => "Array[untyped]", Prism::HashNode => "Hash[untyped, untyped]",
+      Prism::SelfNode => nil
+    }.freeze
+
     # The expressions whose value a method body can return (Lumitrace does
     # not record values of if/case/begin themselves, only of what is inside),
-    # and whether some path returns nil implicitly.
+    # whether some path returns nil implicitly, and return types known from
+    # the source alone (literals, `return a, b`).
+    # Returns [nodes, implicit_nil, fixed_types].
     def tail_exprs(node)
       case node
-      when nil then [[], true]
+      when nil then [[], true, []]
       when Prism::StatementsNode then tail_exprs(node.body.last)
       when Prism::ParenthesesNode then tail_exprs(node.body)
       when Prism::BeginNode
-        return [[], true] if node.statements.nil?
-        tail_exprs(node.else_clause ? node.else_clause.statements : node.statements)
+        return [[], true, []] if node.statements.nil? && node.rescue_clause.nil?
+        parts = [node.else_clause ? tail_exprs(node.else_clause.statements) : tail_exprs(node.statements)]
+        r = node.rescue_clause
+        while r
+          parts << tail_exprs(r.statements)
+          r = r.subsequent
+        end
+        combine(parts)
       when Prism::IfNode, Prism::UnlessNode
-        a, an = tail_exprs(node.statements)
         alt = node.is_a?(Prism::IfNode) ? node.subsequent : node.else_clause
-        b, bn = alt ? tail_exprs(alt.is_a?(Prism::ElseNode) ? alt.statements : alt) : [[], true]
-        [a + b, an || bn]
+        combine([tail_exprs(node.statements),
+                 alt ? tail_exprs(alt.is_a?(Prism::ElseNode) ? alt.statements : alt) : [[], true, []]])
       when Prism::ElseNode then tail_exprs(node.statements)
-      when Prism::CaseNode
+      when Prism::CaseNode, Prism::CaseMatchNode
         parts = node.conditions.map { |w| tail_exprs(w.statements) }
-        parts << (node.else_clause ? tail_exprs(node.else_clause.statements) : [[], true])
-        [parts.flat_map(&:first), parts.any?(&:last)]
+        # case/in without else raises NoMatchingPatternError instead.
+        parts << (node.else_clause ? tail_exprs(node.else_clause.statements) : [[], node.is_a?(Prism::CaseNode), []])
+        combine(parts)
       when Prism::ReturnNode
-        node.arguments ? [node.arguments.arguments, false] : [[], true]
-      else [[node], false]
+        args = node.arguments&.arguments || []
+        if args.empty? then [[], true, []]
+        elsif args.size > 1 || args.first.is_a?(Prism::SplatNode) then [[], false, ["Array[untyped]"]]
+        else tail_exprs(args.first)
+        end
+      when Prism::AndNode, Prism::OrNode
+        # `a && b` returns a only when a is falsy, `a || b` only when truthy.
+        l_nodes, l_nil, l_fixed = tail_exprs(node.left)
+        filter = node.is_a?(Prism::AndNode) ? :falsy : :truthy
+        l_fixed = l_fixed.select { |t| filter == :falsy ? %w[nil bool].include?(t) : t != "nil" }
+        combine([[l_nodes.map { |n| n.is_a?(Array) ? n : [n, filter] }, l_nil && filter == :falsy, l_fixed],
+                 tail_exprs(node.right)])
+      else
+        if LITERALS.key?(node.class)
+          t = LITERALS[node.class]
+          t ? [[node], false, [t]] : [[node], false, []]
+        elsif node.class.name.match?(/(?<!Operator)WriteNode\z/) && node.respond_to?(:value)
+          # `x = v`, `@m ||= v`, `a, b = v`: the value of v.
+          tail_exprs(node.value)
+        else [[node], false, []]
+        end
       end
     rescue NoMethodError
-      [[node], false]
+      [[node], false, []]
     end
+
+    def combine(parts) = [parts.flat_map(&:first), parts.any? { _1[1] }, parts.flat_map(&:last)]
 
     # Constants removed from Ruby that a method body still refers to
     # (a reference raises NameError on Ruby 3.2 and later).
