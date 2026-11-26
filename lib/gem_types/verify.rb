@@ -213,8 +213,11 @@ module GemTypes
           m = cands.lazy.map { |n| find_defined.(n) || (n == cands.last ? find.(n) : nil) }.find { |x| x.is_a?(Module) && !x.is_a?(Class) }
           next if m.nil? # not loaded or not ours to judge
           stated << m
-          actual = if mod.singleton_class.include?(m) && !anc.include?(m) then "extend"
-                   elsif anc.include?(m) then anc.index(m) < anc.index(mod) ? "prepend" : "include"
+          # `extend self` (m == mod): the module is among its own ancestors.
+          extended = mod.singleton_class.include?(m)
+          actual = if how == "extend" && extended then "extend"
+                   elsif anc.include?(m) && !m.equal?(mod) then anc.index(m) < anc.index(mod) ? "prepend" : "include"
+                   elsif extended then "extend"
                    end
           if actual.nil?
             problems << "#{name}: #{how} #{label}, but #{label} is not among its ancestors (nor extended)"

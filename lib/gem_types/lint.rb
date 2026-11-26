@@ -66,8 +66,15 @@ module GemTypes
         end
       end
       d[:consts].each { |c| out.concat(const_lint(c)) }
+      own_src = nil
       d[:classes].each do |c|
         next unless c[:empty] && config.respond_to?(:in_ns?) && !config.in_ns?("#{c[:name]}#x")
+
+        # A module the gem defines outside its namespace (thor's LCSDiff).
+        own_src ||= Array(config.respond_to?(:lib_paths) ? config.lib_paths : []).flat_map { |dir| Dir[File.join(dir, "**/*.rb")] }
+                                                                             .select { File.file?(_1) }.map { File.read(_1, encoding: "UTF-8").scrub }.join("\n")
+        last = c[:name].split("::").last
+        next if own_src.match?(/^\s*(class|module)\s+(::)?(\w+::)*#{Regexp.escape(last)}\b/)
 
         out << [c[:name], "empty declaration of a class outside the gem's namespace: if it comes from another library, load that library's RBS (manifest.yaml / _test/metadata.yaml) instead of a stub"]
       end
