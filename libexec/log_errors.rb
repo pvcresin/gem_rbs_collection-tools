@@ -170,6 +170,8 @@ module GemTypesErrLog
                  block_given: trace.block_given)
     end
     rec[:outcome] = mc.exception? ? "raise" : (mc.return? ? "return" : "break")
+    # Called on an object whose own initialize is still running.
+    rec[:during_init] = true if defined?(GemTypesInit) && GemTypesInit.constructing?(receiver)
     rec[:exc] = mc.exception.class.name if mc.exception?
     rec[:caller] = caller_file
     id = JSON.generate(rec)
@@ -202,6 +204,9 @@ module RBSLogNoRaise
         out = mc.exception? ? "raise #{mc.exception.class}" : (mc.return? ? "#{mc.return_value.class}" : "break")
         msg += " args=(#{args.join(', ')})#{blk} -> #{out}"
       end
+      # Before the object's own initialize has set its state: not what users
+      # of a constructed object see (rbs_hook_fix.rb, GemTypesInit).
+      msg += " (during initialize)" if defined?(GemTypesInit) && GemTypesInit.constructing?(receiver)
       key = msg[0, 400]
       ent = $__rbs_errs[key]; ent[0] += 1
       ent[1] ||= caller.find { |l| l =~ %r{/(test|spec|features)/} && l !~ /rbs\/test/ }

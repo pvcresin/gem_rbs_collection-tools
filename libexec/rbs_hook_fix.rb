@@ -47,10 +47,33 @@ if defined?(RBS::Test::Hook)
                .sub("wrapped_block = Object.new.instance_exec do", "wrapped_block = ::Object.new.instance_exec do")
                .sub("      result = __send__(:\"#{without}\", *args, &wrapped_block)",
                     "      ::GemTypesBlockShape.copy(wrapped_block, #{blk})\n      result = __send__(:\"#{without}\", *args, &wrapped_block)")
+      # initialize: keep the object on a construction stack while it runs,
+      # so a method it calls on itself before setting its state (mime-types
+      # reads #simplified inside MIME::Type#initialize) is not reported
+      # like a user-visible type error.
+      if method_name == :initialize
+        src = src.sub("      result = __send__(:\"#{without}\", *args, &wrapped_block)",
+                      "      result = ::GemTypesInit.during(self) { __send__(:\"#{without}\", *args, &wrapped_block) }")
+                 .sub("      result = __send__(:\"#{without}\", *args)",
+                      "      result = ::GemTypesInit.during(self) { __send__(:\"#{without}\", *args) }")
+      end
       [line, src]
     end
   end
   RBS::Test::Hook.singleton_class.prepend(RBSHookSafeSource)
+
+  module GemTypesInit
+    def self.stack = (Thread.current[:gem_types_init] ||= [])
+
+    def self.during(obj)
+      stack.push(obj)
+      yield
+    ensure
+      stack.pop
+    end
+
+    def self.constructing?(obj) = stack.any? { |o| o.equal?(obj) }
+  end
 
   # RBS_TEST_ONLY_METHODS="String#to_nfc,Kernel.ap": for the classes named
   # there, hook only those methods. Lets a gem's additions to core classes

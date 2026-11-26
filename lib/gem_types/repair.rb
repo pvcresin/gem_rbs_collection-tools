@@ -339,6 +339,16 @@ module GemTypes
                        reason: "the signature file changed since the run (#{old.inspect} at #{s})" }
           next
         end
+        # Reads on an object whose own initialize has not finished (its
+        # state is not set yet) do not show what users see.
+        during, recs_after = recs.partition { _1["during_init"] }
+        unless during.empty?
+          skipped << { key: first["key"], slot: slot_label(first["slot"]), declared: first["declared"], count: during.sum { _1["count"] },
+                       reason: "only while the object's own initialize runs" }
+        end
+        recs = recs_after
+        next if recs.empty?
+
         normal, raised = recs.partition { _1["outcome"] != "raise" }
         # What a test-defined receiver returns or yields may come from the
         # test's own overrides or stubs (a test case including a DSL module
