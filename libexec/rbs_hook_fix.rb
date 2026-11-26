@@ -115,7 +115,6 @@ if defined?(RBS::Test::Hook)
     exact = all.reject { |t| t.end_with?("*") }
     prefixes = all.select { |t| t.end_with?("::*") }.map { |t| t.delete_suffix("*") }
     name_of = Module.instance_method(:name)
-    watched = {}
     install = lambda do |klass|
       next if Thread.current[:gem_types_installing]
 
@@ -129,20 +128,23 @@ if defined?(RBS::Test::Hook)
       end
     end
     declared = ->(n) { tester.env.module_name?(RBS::TypeName.parse("::#{n}")) rescue false }
-    # Hooks wait until the class body that adds a method has ended, as
-    # rbs/test's own :end hook does: `module_function :x` after `def x`
-    # copies whatever x is then, and a hook installed mid-body made the
-    # copy call a missing alias (terminal-table's Util.ansi_escape).
-    open_bodies = []
-    inside = ->(klass) { open_bodies.any? { |o| o.equal?(klass) || o.equal?(klass.singleton_class) } }
-    TracePoint.new(:class, :end) do |tp|
-      if tp.event == :class
-        open_bodies.push(tp.self)
-      else
-        o = open_bodies.pop
-        k = o.respond_to?(:singleton_class?) && o.singleton_class? ? (o.attached_object rescue nil) : o
-        install.(k) if k && watched[k] && !inside.(k)
-      end
+    watched = {}.compare_by_identity
+    is_module = Module.instance_method(:is_a?)
+    mod_name = ->(o) { (is_module.bind_call(o, Module) && name_of.bind_call(o)) rescue nil }
+    target = ->(n) { n && (exact.include?(n) || prefixes.any? { |pre| n.start_with?(pre) }) }
+    # `class << Foo` outside Foo's own body (mime-types' class << MIME::Types):
+    # rbs/test installs hooks when a class body ends, but this body's self is
+    # Foo's singleton class, so Foo's new singleton methods were never
+    # hooked. Install for Foo when such a body ends. Only module receivers:
+    # `class << self` inside an instance method has an object there (a
+    # BasicObject one whose #hash is a tag in Builder::XmlMarkup).
+    TracePoint.new(:end) do |tp|
+      o = tp.self
+      next unless (o.singleton_class? rescue false)
+
+      k = (o.attached_object rescue nil)
+      n = mod_name.(k)
+      install.(k) if target.(n) && declared.(n)
     end.enable
     watch = lambda do |klass|
       next if watched[klass]
@@ -151,16 +153,15 @@ if defined?(RBS::Test::Hook)
       watcher = Module.new do
         define_method(:method_added) do |m|
           super(m)
-          install.(klass) if equal?(klass) && !inside.(klass)
+          install.(klass) if equal?(klass)
         end
         define_method(:singleton_method_added) do |m|
           super(m)
-          install.(klass) if equal?(klass) && !inside.(klass)
+          install.(klass) if equal?(klass)
         end
       end
       klass.singleton_class.prepend(watcher)
     end
-    target = ->(n) { n && (exact.include?(n) || prefixes.any? { |pre| n.start_with?(pre) }) }
     exact.each do |name|
       klass = (Object.const_get(name) rescue nil)
       next unless klass.is_a?(Module) && declared.(name)
@@ -179,12 +180,14 @@ if defined?(RBS::Test::Hook)
           next unless target.(full) && declared.(full)
 
           klass = (const_get(sym, false) rescue nil)
-          next unless klass.is_a?(Module)
+          next unless mod_name.(klass)
 
-          watch.(klass)
-          # Foo = Struct.new(...) is complete now; `class Foo` still has its
-          # body to run (installed when it ends).
-          install.(klass) unless inside.(klass)
+          # Foo = Struct.new(...) arrives with its methods and no class body
+          # for rbs/test's :end hook. `class Foo` arrives empty and gets its
+          # hooks when its body ends: leave it to rbs/test (Thor turns
+          # methods defined mid-body into commands).
+          has_methods = (klass.instance_methods(false).any? || klass.singleton_methods(false).any?) rescue false
+          install.(klass) if has_methods
         end
       end)
     end
