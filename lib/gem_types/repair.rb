@@ -30,7 +30,11 @@ module GemTypes
 
     # One planned widening of one slot.
     # edit: [start, end] character offsets of the slot in file.
-    Change = Struct.new(:file, :line, :key, :slot, :old, :new, :count, :frame, :observed, :round, :edit, keyword_init: true)
+    # trust: why the evidence is enough ("returned by the gem", "passed by
+    # non-test code", "seen from N test files"), or nil for test-only
+    # evidence (one test file), which waits for review.
+    Change = Struct.new(:file, :line, :key, :slot, :old, :new, :count, :frame, :observed, :round, :edit, :trust,
+                        keyword_init: true)
 
     # --- type mapping ---------------------------------------------------
 
@@ -265,6 +269,20 @@ module GemTypes
       slot["block"] ? "block #{base}" : base
     end
 
+    # Why an observed type may widen a slot without review, or nil.
+    # Values the gem returns or yields are its own; values passed by
+    # non-test code (the gem calling itself, a dependency, a script) are
+    # real uses. A value only tests pass needs two test files: one test
+    # feeding a method an odd value it happens to tolerate
+    # (`t.execute(0)`) is not a contract.
+    def trust(add, outward)
+      tests = add[:tests].size
+      if outward then "returned by the gem"
+      elsif !add[:code].empty? && (tests >= 2 || add[:tests].empty?) then "passed by non-test code"
+      elsif tests >= 2 then "seen from #{tests} test files"
+      end
+    end
+
     # Merges the records of several processes (same record, summed counts).
     def read_records(path)
       return [] unless File.exist?(path)
@@ -288,8 +306,9 @@ module GemTypes
     # Plans the widenings for one run's records. files: the signature
     # files repair may edit. Returns { changes: [Change], skipped: [...],
     # reported: [...], deferred: n }; changes carry :edit [start, end, new].
-    def plan(records, files:, test_file:, round: 1)
+    def plan(records, files:, test_file:, round: 1, include_test_only: false, repo: Dir.pwd)
       files = files.to_h { |f| [File.realpath(f), f] }
+      review = []
       skipped = []
       reported = []
       groups = Hash.new { |h, k| h[k] = [] }
@@ -345,9 +364,16 @@ module GemTypes
           type = sup || literal_addition(old, r["value"])
           type, why = rbs_type(r["value"], test_file: test_file) unless type
           if type
-            (adds[type] ||= { count: 0, frame: nil, keys: [] })[:count] += r["count"]
-            adds[type][:frame] ||= r["frame"]
-            adds[type][:keys] |= [r["key"]]
+            a = (adds[type] ||= { count: 0, frame: nil, keys: [], code: [], tests: Set.new })
+            a[:count] += r["count"]
+            a[:frame] ||= r["frame"]
+            a[:keys] |= [r["key"]]
+            a[:tests].merge(Array(r["tests"]).map { |t| File.expand_path(t, repo) })
+            if r["caller"] && !test_file.(r["caller"])
+              a[:code] |= [r["caller"]]
+            elsif r["caller"]
+              a[:tests] << File.expand_path(r["caller"], repo)
+            end
           else
             skipped << { key: r["key"], slot: slot_label(r["slot"]), declared: old, count: r["count"], reason: why, frame: r["frame"] }
           end
@@ -361,19 +387,34 @@ module GemTypes
 
         # Spell the added names like the slot does (`::String` style).
         adds = adds.transform_keys { |t| absolutize(t) } if old.match?(/(?<![\w:])::[A-Z]/)
-        new = widen(old, adds.keys, wrap: %w[return rest keyrest].include?(first["slot"]["pos"]))
-        unless new
-          skipped << { key: first["key"], slot: slot_label(first["slot"]), declared: old, count: adds.values.sum { _1[:count] },
-                       reason: "observed #{adds.keys.join(', ')} already covered as far as the text shows (sampled elements?)" }
-          next
+        adds.each_value { |a| a[:trust] = trust(a, outward) }
+        trusted, test_only = adds.partition { |_, a| a[:trust] }.map(&:to_h)
+        line = text[0...s].count("\n") + 1
+        build = lambda do |set, trust|
+          new = widen(old, set.keys, wrap: %w[return rest keyrest].include?(first["slot"]["pos"]))
+          unless new
+            skipped << { key: first["key"], slot: slot_label(first["slot"]), declared: old, count: set.values.sum { _1[:count] },
+                         reason: "observed #{set.keys.join(', ')} already covered as far as the text shows (sampled elements?)" }
+            next
+          end
+          Change.new(file: files[file], line: line, key: set.values.flat_map { _1[:keys] }.uniq.join(", "),
+                     slot: slot_label(first["slot"]), old: old, new: new,
+                     count: set.values.sum { _1[:count] }, frame: set.values.filter_map { _1[:frame] }.first,
+                     observed: set.keys, round: round, edit: [s, e], trust: trust)
         end
-        keys = adds.values.flat_map { _1[:keys] }.uniq
-        changes << Change.new(file: files[file], line: text[0...s].count("\n") + 1, key: keys.join(", "),
-                              slot: slot_label(first["slot"]), old: old, new: new,
-                              count: adds.values.sum { _1[:count] }, frame: adds.values.filter_map { _1[:frame] }.first,
-                              observed: adds.keys, round: round, edit: [s, e])
+        if include_test_only || test_only.empty?
+          c = build.(adds, adds.values.map { _1[:trust] || "test-only (included)" }.uniq.join("; "))
+          changes << c if c
+        else
+          # The slot widened by the trusted evidence alone; the test-only
+          # part is listed for review with what it would add on top.
+          c = trusted.empty? ? nil : build.(trusted, trusted.values.map { _1[:trust] }.uniq.join("; "))
+          changes << c if c
+          r = build.(adds, nil)
+          review << r if r
+        end
       end
-      { changes: changes, skipped: merge_counts(skipped, %i[key slot declared reason value]),
+      { changes: changes, review: review, skipped: merge_counts(skipped, %i[key slot declared reason value]),
         reported: merge_counts(reported, %i[key kind method_types args outcome]) }
     end
 
@@ -466,13 +507,15 @@ module GemTypes
     # The repair loop. cmds: the commands to run (the test suite, a
     # call-every-method script). Returns the report hash (also written to
     # <out>/repair.json).
-    def run(config, sig, cmds, rounds: 3, dry_run: false, io: $stdout)
+    # include_test_only: also apply widenings only one test file backs.
+    def run(config, sig, cmds, rounds: 3, dry_run: false, include_test_only: false, io: $stdout)
       files = Verify.sig_files(sig)
       Verify.parse_sigs(sig)
       dir = File.join(config.out, "repair")
       FileUtils.mkdir_p(dir)
       test_file = test_file_predicate(config)
-      report = { sig: sig, cmds: cmds, dry_run: dry_run, rounds: [], changes: [], skipped: [], reported: [], failed: [] }
+      report = { sig: sig, cmds: cmds, dry_run: dry_run, include_test_only: include_test_only, rounds: [], changes: [],
+                 review: [], skipped: [], reported: [], failed: [] }
       (1..(dry_run ? 1 : rounds)).each do |round|
         records = []
         runs = cmds.each_with_index.map do |cmd, i|
@@ -484,7 +527,9 @@ module GemTypes
           io.puts "round #{round}: #{r[:cmd]}: #{r[:checks]} type checks, #{r[:errors]} distinct errors#{r[:ok] ? '' : " (exited non-zero, see #{r[:log]})"}"
           io.puts "  WARNING: no type checks recorded: the run did not exercise the signatures" if r[:checks].zero?
         end
-        p = plan(records, files: files, test_file: test_file, round: round)
+        p = plan(records, files: files, test_file: test_file, round: round, include_test_only: include_test_only,
+                                  repo: File.expand_path(config.repo))
+        report[:review] = p[:review]
         report[:skipped] = p[:skipped]
         report[:reported] = p[:reported]
         if dry_run
@@ -507,7 +552,7 @@ module GemTypes
 
     def write_report(config, report)
       report[:json] = File.join(config.out, "repair.json")
-      out = report.merge(changes: report[:changes].map { change_h(_1) })
+      out = report.merge(changes: report[:changes].map { change_h(_1) }, review: report[:review].map { change_h(_1) })
       File.write(report[:json], JSON.pretty_generate(out))
     end
 
@@ -516,7 +561,15 @@ module GemTypes
       io.puts "", "== #{verb} #{report[:changes].size} slot(s)"
       report[:changes].each do |c|
         io.puts "  #{File.basename(c.file)}:#{c.line} #{c.key} #{c.slot}: #{c.old} -> #{c.new}"
-        io.puts "    #{c.count}x, round #{c.round}#{c.frame ? ", e.g. #{c.frame}" : ''}"
+        io.puts "    #{c.count}x, round #{c.round}, #{c.trust}#{c.frame ? ", e.g. #{c.frame}" : ''}"
+      end
+      unless report[:review].empty?
+        io.puts "", "== test-only, review before applying (#{report[:review].size}; one test file passes these: " \
+                    "--include-test-only applies them)"
+        report[:review].each do |c|
+          io.puts "  #{File.basename(c.file)}:#{c.line} #{c.key} #{c.slot}: #{c.old} -> #{c.new}"
+          io.puts "    #{c.count}x#{c.frame ? ", e.g. #{c.frame}" : ''}"
+        end
       end
       unless report[:failed].empty?
         io.puts "", "== not applied: the result did not parse (#{report[:failed].size})"

@@ -25,12 +25,31 @@ $__rbs_errs_json = {}
 #   recv:     the receiver's class { c:, src:, anon: } (the module itself
 #             for a singleton method)
 #   outcome:  how the call ended: return | raise | break; exc: the exception
-#   count, frame: the first test frame
+#   caller:   the file of the code that called the method (the gem, a
+#             dependency or a test)
+#   count, frame: the first test frame; tests: the test files the calls
+#             came from (at most TESTS_CAP)
 module GemTypesErrLog
   KCLASS = ::Kernel.instance_method(:class)
   CAP = 5
   SAMPLE = 50
   TEST_DIR = %r{(\A|/)(test|spec|features)/}
+  TESTS_CAP = 5
+  # Frames that are not the caller of the checked method: rbs/test and its
+  # generated wrappers, these hooks, Ruby's own library (forwardable,
+  # delegate) and internal frames.
+  NOT_CALLER = Regexp.union(%r{/rbs[-\d.]*/lib/rbs/}, %r{/libexec/}, %r{/gem_types/}, /\A<internal:/,
+                            /\A#{Regexp.escape(RbConfig::CONFIG["rubylibdir"])}/)
+
+  # The file of the code that called the checked method: the first frame
+  # outside rbs/test, the hooks and Ruby's library.
+  def self.caller_file
+    loc = caller_locations.find do |l|
+      path = l.absolute_path || l.path
+      path && !path.match?(NOT_CALLER)
+    end
+    loc && (loc.absolute_path || loc.path)
+  end
 
   module_function
 
@@ -152,10 +171,14 @@ module GemTypesErrLog
     end
     rec[:outcome] = mc.exception? ? "raise" : (mc.return? ? "return" : "break")
     rec[:exc] = mc.exception.class.name if mc.exception?
+    rec[:caller] = caller_file
     id = JSON.generate(rec)
-    ent = ($__rbs_errs_json[id] ||= [0, nil])
+    ent = ($__rbs_errs_json[id] ||= [0, nil, []])
     ent[0] += 1
-    ent[1] ||= caller.find { |l| l =~ TEST_DIR && l !~ %r{rbs/test|gem_types|libexec} }
+    frame = caller.find { |l| l =~ TEST_DIR && l !~ %r{rbs/test|gem_types|libexec} }
+    ent[1] ||= frame
+    test = frame && frame[/\A(.*?):\d+/, 1]
+    ent[2] << test if test && ent[2].size < TESTS_CAP && !ent[2].include?(test)
   rescue StandardError => e
     warn "log_errors: could not record #{err.class}: #{e.class}: #{e.message}" if ENV["GEM_TYPES_DEBUG"]
   end
@@ -194,6 +217,6 @@ at_exit do
     File.open(path, "a") { |f| f.flock(File::LOCK_EX); f.puts(lines) }
   end
   append.(out + ".checked.tsv", $__rbs_checked.sort.map { |k, v| "#{v}\t#{k}" })
-  append.(out + ".errors.jsonl", $__rbs_errs_json.map { |id, (n, loc)| JSON.generate(JSON.parse(id).merge("count" => n, "frame" => loc)) })
+  append.(out + ".errors.jsonl", $__rbs_errs_json.map { |id, (n, loc, tests)| JSON.generate(JSON.parse(id).merge("count" => n, "frame" => loc, "tests" => tests)) })
   append.(out + ".errors.tsv", $__rbs_errs.sort_by { |k, v| -v[0] }.map { |k, (n, loc)| "#{n}x\t#{k}\t@ #{loc}" })
 end
