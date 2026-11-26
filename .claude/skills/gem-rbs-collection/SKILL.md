@@ -284,6 +284,12 @@ itself must validate with its dependencies.
   the API wants then show up as type errors: test scaffolding, not RBS
   errors. What still differs under the checker: the block object's
   identity and caller locations (rake's test_namespace, test_create).
+- A module that includes another and then makes its methods private
+  (`private(*FileUtils.instance_methods(false))` in Rake::DSL) must
+  redeclare them under `private`: an RBS `include` keeps them public, so
+  Steep accepts `Rake::TestTask.new.sh(...)`, which raises.
+- An argument the code turns into a default (`data.to_s`, `args.first ||
+  ...`) is optional and nilable (thor's `create_file("dir/.keep")`).
 - Duck-typed parameters (the code checks `respond_to?(:write)` or just
   calls read/each_line): declare an interface, not `IO | StringIO`.
   Tempfile is `< File` in RBS, so Steep accepts it, but at runtime it is
