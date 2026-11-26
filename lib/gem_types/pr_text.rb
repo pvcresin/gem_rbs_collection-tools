@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "json"
+require "yaml"
+require "shellwords"
 
 module GemTypes
   # Drafts the commit message (= PR description) for a gem's RBS: what is
@@ -31,8 +33,24 @@ module GemTypes
       out << wrap("- Public but not declared (say why: internal, metaprogramming, ...): #{summarize(public_missing)}.") unless public_missing.empty?
       out << wrap("- Private or documented as internal: #{hidden.size} methods.") unless hidden.empty?
       out << "- (nothing)" if public_missing.empty? && hidden.empty?
+      sigdir = File.directory?(sig) ? sig : File.dirname(sig)
+      manifest = File.join(sigdir, "manifest.yaml")
+      if File.exist?(manifest)
+        libs = Array((YAML.safe_load_file(manifest) || {})["dependencies"]).filter_map { _1["name"] if _1.is_a?(Hash) }
+        text = RbsReader.sig_files(sig).map { |f| File.read(f, encoding: "UTF-8") }.join("\n")
+        uses = libs.map do |l|
+          consts = Lint::STDLIB.select { |c, lib| lib == l && text.match?(/\b#{Regexp.escape(c)}\b/) }.keys
+          consts.empty? ? "`#{l}`" : "`#{l}` (#{consts.join(', ')})"
+        end
+        out << "" << wrap("manifest.yaml lists the stdlib libraries the signatures refer to: #{uses.join(', ')}.")
+      end
+      pkg = File.join(workdir, "pkg")
+      if File.directory?(pkg)
+        out << "" << (Dir[File.join(pkg, "sig", "**", "*.rbs")].empty? ? "The gem does not ship RBS (no sig/ in the #{ver} package)." :
+                                                                   "NOTE: the package has sig/: explain why these are needed.")
+      end
       out << "" << "## Verification" << ""
-      out << "- `bin/test` and RuboCop pass."
+      out << "- `bin/test`, RuboCop, `rbs parse` and strict_rubocop_config.rb pass."
       v = read_json(File.join(config.out, "verify.json"))
       live = read_json(File.join(config.out, "live.json"))
       out << "- Reviewed the signatures against the gem source; every declared method and class exists in the loaded gem." if v && v["exists"]
@@ -56,7 +74,23 @@ module GemTypes
       else
         out << "- (run `gem-types verify` for the test suite numbers)"
       end
+      refs = references(workdir)
+      out << "" << "## References" << "" << refs unless refs.empty?
       out.join("\n") + "\n"
+    end
+
+    # The source repository at the release tag (or commit) the RBS was
+    # checked against.
+    def references(workdir)
+      repo = File.join(workdir, "repo")
+      return "" unless File.directory?(File.join(repo, ".git"))
+
+      url = `git -C #{repo.shellescape} remote get-url origin 2>/dev/null`.strip.sub(/\.git\z/, "")
+      return "" unless url.start_with?("https://")
+
+      tag = `git -C #{repo.shellescape} describe --tags --exact-match 2>/dev/null`.strip
+      ref = tag.empty? ? `git -C #{repo.shellescape} rev-parse HEAD 2>/dev/null`.strip : tag
+      "- #{url}/tree/#{ref}"
     end
 
     # Ruby's callbacks, not API users call.

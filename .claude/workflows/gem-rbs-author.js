@@ -49,9 +49,14 @@ Setup done: workdir W=${x.workdir} (repo/ = upstream at the release tag, pkg/ = 
 ${x.notes ? 'Notes: ' + x.notes : ''}
 Output: only inside ${x.worktree}/gems/${x.gem}/ : ${x.ver}/${x.gem}.rbs, ${x.ver}/_test/test.rb (+ _test/test.rbs if needed), .rubocop.yml (copy gems/netrc/.rubocop.yml), manifest.yaml only for stdlib deps. No _reviewers.yaml. Do not commit, push or touch GitHub. Never execute code from the worktree's gems/ except via bin/test.
 
+Before writing, read the "Pitfalls from the collection's history" checklist in the skill; the mistakes there are what later commits most often had to fix. Run $T lint --workdir W --sig ${sigdir(x)} (seconds, static) as soon as a first version exists and again before reporting: fix every finding or say in doubts why it does not apply.
+
+Test style (_test/test.rb): no bin/init_new_gem header comment; pin the return types of the main calls with a "# @type var x: T" comment before the assignment, as the collection's recent gems do. Do not leave untyped placeholders for another gem being typed in parallel: reference its classes and say the PR depends on it.
+
 Rules: when you change a declaration, re-check every declared method that forwards to it or returns its result; type the public API; leave out internals and @api private and say what; calls that only raise in the gem's tests stay rejected; no -> bot overloads for errors; read every branch (other platforms, error paths, early returns inside blocks); proper parameter names.
 
 Verify, all required (T=${T}/exe/gem-types):
+0. $T lint --workdir W --sig ${sigdir(x)}: no unexplained findings.
 1. cd ${x.worktree} && bin/test gems/${x.gem}/${x.ver}; bundle exec rubocop gems/${x.gem}
 2. $T exists --workdir W --sig ${sigdir(x)}/${x.gem}.rbs and $T verify (same args). Triage every type error, uncalled method and "possibly too wide" line against the source.
 3. A script W/scripts/call_all.rb that calls every declared method (every overload, nil/edge paths). Run it under $T check -s ${sigdir(x)} -t "${x.ns}" -c W/calls.txt -- <ruby cmd>, then $T coverage ${sigdir(x)}/${x.gem}.rbs W/calls.txt until nothing is missing.

@@ -163,6 +163,59 @@ name parameters properly, and decide unions.
 - Keep common calls convenient: do not make a return nil-able if every
   path through the gem sets it.
 
+## Pitfalls from the collection's history
+
+What later commits in gem_rbs_collection most often had to correct
+(about 280 correcting commits analysed). `gem-types lint` (static,
+seconds) catches the starred ones; run it on the first draft and again
+before committing.
+
+1. * **Required vs optional block** (the most common fix, ~40 commits):
+   `rbs prototype` writes `{ }` for any `&block`. A method that checks
+   `block_given?`, `if block`, `block&.call`, or returns `to_enum` takes
+   `?{ }` (plus `() -> Enumerator[...]`). A method that yields or takes
+   `&blk` needs some overload with a block.
+2. * **Block shape**: the parameter count must match `yield a, b`;
+   `@hash.each(&blk)` yields one `[K, V]`. A block whose result is used
+   as a condition returns `boolish`, not `bool`. A block passed to
+   instance_eval/instance_exec needs `[self: X]` (DSLs). A method
+   returning the block's value is `[T] { () -> T } -> T`.
+3. * **Arity and keywords**: an argument with a default is optional in
+   every overload; every keyword the def takes is declared (or `**`);
+   setters take exactly one argument.
+4. * **Missing nil** (`return`, `return nil`, `if`/`case` without `else`,
+   `h[k]`, `find`, `first`) and **spurious nil** (finders that raise,
+   values always set).
+5. * **Literal types from generators**: `-> false`, `VERSION: "1.2.3"`,
+   unions of string literals. A module predicate that includers override
+   is `bool`.
+6. * **Protocol methods**: `==`/`eql?` -> bool, `hash` -> Integer, `to_s`
+   -> String, `initialize` -> void, predicates not untyped.
+7. * **module_function** is `def self?.m`, not `def self.m`.
+8. * **include / extend / prepend** as at runtime, and the gem's own
+   mixins declared (`exists` compares them with the ancestors).
+9. * **Manifest**: `- name: <stdlib library>` only (gem dependencies come
+   from the gemspec); every stdlib constant the RBS names (URI, Date,
+   Logger, Pathname, Set is core, ...) needs its library. No stub classes
+   of other libraries: load their RBS (manifest, `_test/metadata.yaml`).
+10. **Parameters too narrow** (~22 commits): accept what the docs and the
+    gem's own callers pass (Symbol as well as String, `_ToS`, an
+    interface for duck typing, Array or element where `Array(x)` is
+    used).
+11. **`instance` vs `self` vs a class name**: chainable methods return
+    `self`; `self.new`-like class methods return `instance`;
+    `initialize` returns void.
+12. **Generics**: `include Enumerable[T]` with its argument, `[T]` rather
+    than `[untyped]` inside a generic class.
+13. **Duplicates** of stdlib or other gems' declarations on reopened core
+    classes: Steep's `--validate=library` in CI rejects them.
+
+Test style of recently added gems: pin return types with
+`# @type var x: T` before the main calls (89% of them), drop
+bin/init_new_gem's header comment, keep `_test/test.rbs` for helper
+classes only. `steep check --validate=library` runs in CI, so the RBS
+itself must validate with its dependencies.
+
 ## Type patterns seen in real gems
 
 - `module_function` → `def self?.m`. A module extended into classes
@@ -245,6 +298,11 @@ name parameters properly, and decide unions.
   error names and retries once; otherwise delete the line in `env/Gemfile`.
 
 ## 4. Verify
+
+`gem-types lint --workdir W --sig gems/<gem>/<ver>` first: the static
+checks of "Pitfalls from the collection's history" plus the test style,
+manifest and .rubocop.yml rules CI enforces, in seconds. `verify` runs it
+too.
 
 Trust `verify`'s exit status: 0 only when exists, Steep and a complete
 checked test run all pass. If it prints `CHECKED RUN INCOMPLETE`, fix the

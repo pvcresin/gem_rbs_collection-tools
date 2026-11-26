@@ -56,7 +56,7 @@ module GemTypes
 
         name = decl.name.to_s.delete_prefix("::")
         full = outer.empty? || decl.name.absolute? ? name : "#{outer.first}::#{name}"
-        info = (classes[full] ||= { kind: is_class ? "class" : "module", supers: [] })
+        info = (classes[full] ||= { kind: is_class ? "class" : "module", supers: [], mixins: [] })
         if is_class && decl.super_class
           info[:supers] << { name: decl.super_class.name.to_s.delete_prefix("::"),
                              absolute: decl.super_class.name.absolute?, context: outer }
@@ -65,6 +65,11 @@ module GemTypes
           case m
           when RBS::AST::Members::Alias
             aliases << [full, m.kind == :singleton ? "." : "#", m.new_name.to_s, m.old_name.to_s]
+          when RBS::AST::Members::Include, RBS::AST::Members::Extend, RBS::AST::Members::Prepend
+            next if m.name.interface?
+
+            info[:mixins] << { how: m.class.name.split("::").last.downcase, name: m.name.to_s.delete_prefix("::"),
+                               absolute: m.name.absolute?, context: [full] + outer }
           when RBS::AST::Declarations::Class, RBS::AST::Declarations::Module
             walk.(m, [full] + outer)
           end
@@ -108,10 +113,13 @@ module GemTypes
         # except a reopened class from outside the gem (String, ...).
         check = sup || config.in_ns?("#{name}#x")
         [name, { "kind" => info[:kind], "check_super" => !!check,
-                 "super" => sup && super_candidates(sup, st[:classes]), "super_label" => sup && sup[:name] }]
+                 "super" => sup && super_candidates(sup, st[:classes]), "super_label" => sup && sup[:name],
+                 "mixins" => info[:mixins].map { |mx| [mx[:how], mx[:name], super_candidates(mx, st[:classes])] },
+                 "own" => config.in_ns?("#{name}#x") }]
       end
       aliases = st[:aliases].map { |owner, sep, new, old| ["#{owner}#{sep}#{new}", "#{owner}#{sep}#{old}"] }
-      input = { "keys" => keys, "classes" => classes, "aliases" => aliases, "requires" => config.requires }
+      input = { "keys" => keys, "classes" => classes, "aliases" => aliases, "requires" => config.requires,
+                "ns" => config.ns }
       Dir.mktmpdir do |tmp|
         File.write(File.join(tmp, "in.json"), JSON.generate(input))
         File.write(File.join(tmp, "check.rb"), EXISTS_SCRIPT)
@@ -151,7 +159,21 @@ module GemTypes
       input["requires"].each { |r| require r }
       problems = []
       name_of = Module.instance_method(:name)
-      find = ->(name) { name.split("::").inject(Object) { |m, c| m.const_get(c, false) } rescue nil }
+      # const_missing hooks (coderay's plugin hosts) may raise LoadError
+      # for a candidate name that is not theirs.
+      find = lambda do |name|
+        name.split("::").inject(Object) { |m, c| m.const_get(c, false) }
+      rescue StandardError, LoadError
+        nil
+      end
+      # For the names a superclass or mixin reference may mean: only
+      # constants that are defined, since a const_missing may answer any
+      # name with a default (coderay's Scanners returns its Text plugin).
+      find_defined = lambda do |name|
+        name.split("::").inject(Object) { |m, c| m.const_defined?(c, false) ? m.const_get(c, false) : (break nil) }
+      rescue StandardError, LoadError
+        nil
+      end
       input["classes"].each do |name, info|
         mod = find.(name)
         if mod.nil?
@@ -163,7 +185,7 @@ module GemTypes
         elsif info["kind"] == "module" && mod.is_a?(Class)
           problems << "#{name}: declared as module but is a class"
         elsif info["kind"] == "class" && info["check_super"]
-          want = info["super"] ? info["super"].lazy.map { |n| find.(n) }.find { |m| m.is_a?(Class) } : Object
+          want = info["super"] ? info["super"].lazy.map { |n| find_defined.(n) || (n == info["super"].last ? find.(n) : nil) }.find { |m| m.is_a?(Class) } : Object
           label = info["super_label"] || "nothing (Object)"
           # An anonymous intermediate class (`class Foo < Struct.new(:a)`)
           # stands between the class and the declared superclass.
@@ -176,6 +198,45 @@ module GemTypes
             problems << "#{name}: superclass is #{actual.inspect}, RBS says #{label}#{wn == label || want == Object ? '' : " (#{wn})"}"
           end
         end
+      end
+      # include / extend / prepend as the RBS states them, against the
+      # ancestors; for the gem's own classes, modules of the gem mixed in
+      # at runtime that the RBS leaves out.
+      in_ns = ->(n) { n && input["ns"].any? { |x| n == x || n.start_with?("#{x}::") } }
+      input["classes"].each do |name, info|
+        mod = find.(name)
+        next unless mod.is_a?(Module)
+
+        anc = mod.ancestors
+        stated = []
+        (info["mixins"] || []).each do |how, label, cands|
+          m = cands.lazy.map { |n| find_defined.(n) || (n == cands.last ? find.(n) : nil) }.find { |x| x.is_a?(Module) && !x.is_a?(Class) }
+          next if m.nil? # not loaded or not ours to judge
+          stated << m
+          actual = if mod.singleton_class.include?(m) && !anc.include?(m) then "extend"
+                   elsif anc.include?(m) then anc.index(m) < anc.index(mod) ? "prepend" : "include"
+                   end
+          if actual.nil?
+            problems << "#{name}: #{how} #{label}, but #{label} is not among its ancestors (nor extended)"
+          elsif actual != how
+            problems << "#{name}: #{how} #{label}, but at runtime it is #{actual}d"
+          end
+        end
+        next unless info["own"]
+
+        sup_anc = mod.is_a?(Class) && mod.superclass ? mod.superclass.ancestors : []
+        # Only modules the RBS declares: an undeclared internal module is
+        # left out on purpose.
+        declared = ->(m) { input["classes"].key?(name_of.bind_call(m)) }
+        direct = (anc - sup_anc - [mod]).select { |m| !m.is_a?(Class) && in_ns.(name_of.bind_call(m)) && declared.(m) }
+        direct -= stated.flat_map(&:ancestors)
+        direct.each do |m|
+          how = anc.index(m) < anc.index(mod) ? "prepend" : "include"
+          problems << "#{name}: #{how}s #{name_of.bind_call(m)} at runtime; the RBS does not say so"
+        end
+        ext = (mod.singleton_class.included_modules - (mod.is_a?(Class) && mod.superclass ? mod.superclass.singleton_class.included_modules : Module.new.singleton_class.included_modules))
+        ext = ext.select { |m| in_ns.(name_of.bind_call(m)) && declared.(m) } - stated.flat_map(&:ancestors)
+        ext.each { |m| problems << "#{name}: extends #{name_of.bind_call(m)} at runtime; the RBS does not say so" }
       end
       defined = lambda do |key|
         i = key.rindex(/[#.]/)
@@ -518,10 +579,16 @@ module GemTypes
     #   RBS only accepts keywords: `new(hash_variable)` is rejected;
     # - the method refers to Fixnum/Bignum, so it raises NameError on Ruby
     #   3.2 and later: declare it only if some path avoids the reference.
+    # Plus the checks in Lint (blocks, arity, nil, literals, protocol
+    # methods, module_function, stubs) and the gem directory's layout.
     def lint(config, sig)
-      rbs = RbsReader.read_files(parse_sigs(sig).map(&:first), include_private: true)
-      out = []
-      DefIndex.new(config.lib_paths).each do |d|
+      parsed = parse_sigs(sig)
+      rbs = RbsReader.read_files(parsed.map(&:first), include_private: true)
+      defs = DefIndex.new(config.lib_paths)
+      out = Lint.run(config, parsed, defs)
+      sigdir = File.directory?(sig) ? sig : File.dirname(sig)
+      out += Lint.layout(sigdir, gem_deps: gem_dep_names(config))
+      defs.each do |d|
         sigs = rbs.methods[d[:key]] || (d[:key].end_with?("#initialize") ? rbs.methods[d[:key].sub("#initialize", ".new")] : nil)
         next unless sigs
 
@@ -813,6 +880,15 @@ module GemTypes
 
     def dep_sig_args(config, sig)
       dep_sigs(config, sig).map { |k, v| " -#{k} #{v.shellescape}" }.join
+    end
+
+    # The gem's runtime dependencies (from the package's gemspec).
+    def gem_dep_names(config)
+      pkg = Dir[File.join(File.dirname(config.out), "*.gem")].first or return []
+      require "rubygems/package"
+      Gem::Package.new(pkg).spec.runtime_dependencies.map(&:name)
+    rescue StandardError
+      []
     end
 
     def manifest_libraries(dir)

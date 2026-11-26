@@ -327,7 +327,7 @@ module GemTypes
       @attrs = {}
       @hidden = {}
       @internal_ns = {}
-      dirs.flat_map { |d| Dir[File.join(d, "**/*.rb")] }.each do |file|
+      dirs.flat_map { |d| Dir[File.join(d, "**/*.rb")] }.select { |f| File.file?(f) }.each do |file|
         result = Prism.parse_file(file)
         # Comments on lines of their own form the doc block above a
         # definition; a trailing comment (`def x # :nodoc:`) belongs to the
@@ -629,7 +629,91 @@ module GemTypes
                  params: params.compact, lasts: lasts.map(&loc), implicit_nil: implicit_nil, fixed_returns: fixed.uniq,
                  falsy_lasts: filtered.filter_map { |n, f| loc.(n) if f == :falsy },
                  truthy_lasts: filtered.filter_map { |n, f| loc.(n) if f == :truthy },
-                 legacy_consts: legacy_consts(node.body) }
+                 legacy_consts: legacy_consts(node.body), early_nil: early_nil?(node.body),
+                 block: block_usage(node, params.compact.find { |x| x[:kind] == "block" }&.dig(:name)) }
+    end
+
+    # A `return` / `return nil` anywhere in the body (not in a nested def
+    # or lambda, whose return is their own).
+    def early_nil?(body)
+      stack = [body].compact
+      while (n = stack.pop)
+        next if n.is_a?(Prism::DefNode) || n.is_a?(Prism::LambdaNode)
+        next if n.is_a?(Prism::CallNode) && n.name == :lambda && n.receiver.nil?
+
+        if n.is_a?(Prism::ReturnNode)
+          args = n.arguments&.arguments || []
+          return true if args.empty? || (args.size == 1 && args.first.is_a?(Prism::NilNode))
+        end
+        stack.concat(n.compact_child_nodes)
+      end
+      false
+    end
+
+    # Methods whose block runs with another self (DSL blocks need
+    # `[self: X]` in the RBS).
+    SELF_CHANGING = %i[instance_eval instance_exec class_eval class_exec module_eval module_exec
+                       define_method define_singleton_method].freeze
+
+    # How a method body uses its block:
+    #   yields:     argument counts of `yield` / `blk.call` (nil: splat)
+    #   guarded:    block_given? or `if blk` / `blk&.call` / `blk.nil?`
+    #   forwarded:  passed on with `&blk` (or `&`), or a bare `super`
+    #   stored:     kept for later (`@x = blk`, passed as an argument)
+    #   enum:       calls to_enum / enum_for (returns an Enumerator without one)
+    #   self_eval:  passed to instance_eval/instance_exec/... (DSL block)
+    def block_usage(defn, name)
+      u = { yields: [], guarded: false, forwarded: false, stored: false, enum: false, self_eval: false, named: !name.nil? }
+      blk = name&.to_sym
+      stack = [defn.body].compact
+      while (n = stack.pop)
+        case n
+        when Prism::DefNode then next
+        when Prism::YieldNode
+          args = n.arguments&.arguments || []
+          u[:yields] << (args.any? { |a| a.is_a?(Prism::SplatNode) } ? nil : args.size)
+        when Prism::ForwardingSuperNode then u[:forwarded] = true
+        when Prism::CallNode
+          if n.receiver.nil? && %i[block_given? iterator?].include?(n.name)
+            u[:guarded] = true
+          elsif n.receiver.nil? && %i[to_enum enum_for].include?(n.name) ||
+                n.receiver.is_a?(Prism::SelfNode) && %i[to_enum enum_for].include?(n.name)
+            u[:enum] = true
+          end
+          if blk && n.receiver.is_a?(Prism::LocalVariableReadNode) && n.receiver.name == blk
+            if %i[call yield () []].include?(n.name)
+              args = n.arguments&.arguments || []
+              u[:yields] << (args.any? { |a| a.is_a?(Prism::SplatNode) } ? nil : args.size)
+              u[:guarded] = true if n.safe_navigation?
+            elsif %i[nil? present? blank?].include?(n.name)
+              u[:guarded] = true
+            end
+          end
+          ba = n.block
+          if ba.is_a?(Prism::BlockArgumentNode) && (ba.expression.nil? || ba.expression.is_a?(Prism::LocalVariableReadNode) && ba.expression.name == blk)
+            if SELF_CHANGING.include?(n.name) || n.name == :new && n.receiver&.slice == "Class"
+              u[:self_eval] = true
+            else
+              u[:forwarded] = true
+            end
+          end
+          if blk && (n.arguments&.arguments || []).any? { |a| a.is_a?(Prism::LocalVariableReadNode) && a.name == blk }
+            SELF_CHANGING.include?(n.name) ? u[:self_eval] = true : u[:stored] = true
+          end
+        when Prism::IfNode, Prism::UnlessNode, Prism::AndNode, Prism::OrNode
+          cond = n.respond_to?(:predicate) ? n.predicate : n.left
+          u[:guarded] = true if blk && cond.is_a?(Prism::LocalVariableReadNode) && cond.name == blk
+        when Prism::InstanceVariableWriteNode, Prism::InstanceVariableOrWriteNode, Prism::LocalVariableWriteNode,
+             Prism::ClassVariableWriteNode, Prism::ConstantWriteNode
+          u[:stored] = true if blk && n.value.is_a?(Prism::LocalVariableReadNode) && n.value.name == blk
+        when Prism::HashNode, Prism::ArrayNode, Prism::KeywordHashNode
+          elems = n.respond_to?(:elements) ? n.elements : []
+          vals = elems.map { |e| e.respond_to?(:value) ? e.value : e }
+          u[:stored] = true if blk && vals.any? { |v| v.is_a?(Prism::LocalVariableReadNode) && v.name == blk }
+        end
+        stack.concat(n.compact_child_nodes)
+      end
+      u
     end
 
     # Types of literal nodes Lumitrace does not record a value for.
