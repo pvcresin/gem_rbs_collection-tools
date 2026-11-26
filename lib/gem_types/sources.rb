@@ -711,6 +711,19 @@ module GemTypes
       body.size == 1 && body.first.is_a?(Prism::CallNode) && %i[raise fail].include?(body.first.name) && body.first.receiver.nil?
     end
 
+    # An `if block_given?` / `if blk` whose body raises: a block is refused.
+    def raise_with_block?(n, blk)
+      return false unless n.is_a?(Prism::IfNode)
+
+      c = n.predicate
+      given = (c.is_a?(Prism::CallNode) && c.receiver.nil? && %i[block_given? iterator?].include?(c.name)) ||
+              (blk && c.is_a?(Prism::LocalVariableReadNode) && c.name == blk)
+      return false unless given
+
+      body = n.statements&.body || []
+      body.size == 1 && body.first.is_a?(Prism::CallNode) && %i[raise fail].include?(body.first.name) && body.first.receiver.nil?
+    end
+
     # Methods whose block runs with another self (DSL blocks need
     # `[self: X]` in the RBS).
     SELF_CHANGING = %i[instance_eval instance_exec class_eval class_exec module_eval module_exec
@@ -781,6 +794,9 @@ module GemTypes
           # check makes the block required, not optional.
           if raise_without_block?(n, blk)
             u[:requires] = true
+          elsif raise_with_block?(n, blk)
+            # `raise ArgumentError, "no block please" if block_given?`
+            u[:forbids] = true
           end
         when Prism::InstanceVariableWriteNode, Prism::InstanceVariableOrWriteNode, Prism::LocalVariableWriteNode,
              Prism::ClassVariableWriteNode, Prism::ConstantWriteNode

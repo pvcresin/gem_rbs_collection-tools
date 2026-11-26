@@ -453,7 +453,7 @@ module GemTypes
       with = m.overloads.select(&:block)
       without = m.overloads.reject(&:block)
       used_fwd = u[:forwarded] && (u[:forward_to].nil? || u[:super] || u[:forward_to].any? { |n| takers[n] })
-      takes = !u[:yields].empty? || u[:guarded] || u[:self_eval] || u[:stored] || (u[:named] && used_fwd)
+      takes = !u[:forbids] && (!u[:yields].empty? || u[:guarded] || u[:self_eval] || u[:stored] || (u[:named] && used_fwd))
       if with.empty? && takes
         out << [m.key, "the source #{u[:yields].empty? ? 'takes a block (&block)' : 'yields'} but no overload declares one"]
       end
