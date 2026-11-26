@@ -162,6 +162,9 @@ module GemTypesErrLog
 end
 module RBSLogNoRaise
   def call(receiver, trace)
+    # Calls of a shape already checked often enough (rbs_hook_fix.rb).
+    return nil if defined?(GemTypesCheckSample) && GemTypesCheckSample.skip?(self, trace)
+
     $__rbs_checked["#{self_class rescue '?'} #{trace.method_name}"] += 1
     super
   rescue RBS::Test::Tester::TypeError => e

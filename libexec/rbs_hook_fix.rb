@@ -122,3 +122,50 @@ if defined?(RBS::Test::Hook)
     end
   end
 end
+
+# Checking every call is what makes a checked suite slow (http-cookie: 612k
+# checks, 9.5 min). Calls of the same method with the same shape - receiver
+# class, argument classes, block given, how the call ended and the classes
+# its block got and returned - pass or fail the same way, so after
+# GEM_TYPES_CHECK_SAME (default 20; 0 checks everything) of them the rest
+# are skipped. Element types inside collections can still differ between
+# such calls; rbs/test only samples those anyway.
+if defined?(RBS::Test::Tester::MethodCallTester)
+  module GemTypesCheckSample
+    LIMIT = Integer(ENV.fetch("GEM_TYPES_CHECK_SAME", "20"))
+    SEEN = Hash.new(0)
+    KLASS = ::Kernel.instance_method(:class)
+    @last = nil
+    @last_skip = false
+
+    def self.cls(v) = (KLASS.bind_call(v) rescue BasicObject)
+
+    def self.shape(tester, trace)
+      mc = trace.method_call
+      ended = mc.exception? ? [:raise, cls(mc.exception)] : (mc.return? ? [:return, cls(mc.return_value)] : [:break])
+      blk = trace.block_calls.first(3).map do |bc|
+        [bc.arguments.map { cls(_1) }, bc.return? ? cls(bc.return_value) : :other]
+      end
+      [tester.self_class, tester.kind, trace.method_name, mc.arguments.map { cls(_1) }, trace.block_given, ended, blk]
+    end
+
+    # Once per trace (log_errors.rb asks too, before counting a check).
+    def self.skip?(tester, trace)
+      return false if LIMIT <= 0
+      return @last_skip if @last.equal?(trace)
+
+      @last = trace
+      key = shape(tester, trace)
+      @last_skip = (SEEN[key] += 1) > LIMIT
+    rescue StandardError
+      @last_skip = false
+    end
+
+    def call(receiver, trace)
+      return nil if GemTypesCheckSample.skip?(self, trace)
+
+      super
+    end
+  end
+  RBS::Test::Tester::MethodCallTester.prepend(GemTypesCheckSample)
+end
