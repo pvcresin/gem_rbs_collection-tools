@@ -209,6 +209,17 @@ name parameters properly, and decide unions.
   other key/value types. When the method only reads the Hash, use
   `Hash[untyped, untyped]` or an interface. `verify` flags parameters the
   tests passed a Hash/Array subclass to.
+- Duck-typed parameters (the code checks `respond_to?(:write)` or just
+  calls read/each_line): declare an interface, not `IO | StringIO`.
+  Tempfile is `< File` in RBS, so Steep accepts it, but at runtime it is
+  a delegator (`is_a?(IO)` is false) and rbs/test rejects it
+  (http-cookie save/load). Give interface methods the exact arity the
+  code calls (`def write: (String) -> untyped`): `(*untyped) -> untyped`
+  is not matched by IO/StringIO, whose methods do not take any number of
+  arguments.
+- A plugin gem its host depends on (faraday-net_http, which faraday
+  depends on) gets the host's RBS through `_test/metadata.yaml`
+  `additional_gems:`; `verify`/`live` read it too.
 - After widening a declaration, re-check what is built on it: coderay's
   TokensProxy#each forwards to #tokens, so widening #tokens to
   `Tokens | Array[Tokens]` also changed what #each yields.
