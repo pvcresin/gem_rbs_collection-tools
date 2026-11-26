@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "json"
+require "yaml"
 require "tmpdir"
 require "fileutils"
 require "shellwords"
@@ -253,11 +254,16 @@ module GemTypes
         FileUtils.cp(f, File.join(dir, copy))
         copies[copy] = f
       end
+      # The dependencies' signatures too (their manifest libraries included).
+      deps = dep_sigs(config, sig)
+      dep_dirs = deps.filter_map { |k, v| v if k == :s }
+      libraries = (libraries + deps.filter_map { |k, v| v if k == :l } + dep_dirs.flat_map { |d| manifest_libraries(d) }).uniq
+      dep_dirs.each_with_index { |d, i| File.symlink(d, File.join(dir, "dep#{i}")) }
       File.write(File.join(dir, "Steepfile"), <<~RUBY)
         D = Steep::Diagnostic
         target :lib do
           #{config.lib_paths.each_index.map { |i| "check \"lib#{i}\"" }.join("\n  ")}
-          signature "sig"
+          signature "sig"#{dep_dirs.each_index.map { |i| ", \"dep#{i}\"" }.join}
           #{libraries.map { |l| "library #{l.dump}" }.join("\n  ")}
           configure_code_diagnostics(D::Ruby.all_error)
         end
@@ -772,27 +778,53 @@ module GemTypes
     # collection has (gems/<dep>/<version>, the newest version allowed by
     # the dependency, else the newest), so signatures can refer to them
     # (faraday_middleware's classes inherit from Faraday::Middleware).
-    def dep_sig_args(config, sig)
+    # The signatures of the gem's dependencies, as `rbs collection` would
+    # load them: [:s, dir] for a gem in the collection, [:l, name] for a
+    # library in rbs's stdlib.
+    def dep_sigs(config, sig)
       gems_dir = File.expand_path(sig).split(File::SEPARATOR).then do |parts|
-        i = parts.rindex("gems") or return ""
+        i = parts.rindex("gems") or return []
         parts[0..i].join(File::SEPARATOR)
       end
-      pkg = Dir[File.join(File.dirname(config.out), "*.gem")].first or return ""
+      pkg = Dir[File.join(File.dirname(config.out), "*.gem")].first or return []
       require "rubygems/package"
       spec = Gem::Package.new(pkg).spec
       own = File.expand_path(File.directory?(sig) ? sig : File.dirname(sig))
-      spec.runtime_dependencies.filter_map do |dep|
+      # Plus the gems _test/metadata.yaml adds for bin/test (a plugin whose
+      # host library depends on it, like faraday-net_http and faraday).
+      meta = File.join(own, "_test", "metadata.yaml")
+      extra = File.exist?(meta) ? Array((YAML.safe_load_file(meta) || {})["additional_gems"]) : []
+      deps = spec.runtime_dependencies + (extra.map(&:to_s) - spec.runtime_dependencies.map(&:name)).map { |n| Gem::Dependency.new(n) }
+      deps.filter_map do |dep|
         versions = Dir[File.join(gems_dir, dep.name, "*")].select { |d| File.directory?(d) && File.basename(d).match?(/\A\d/) }
-        next if versions.empty?
+        # A default gem typed in rbs's stdlib (net-http, uri, ...), as
+        # `rbs collection` resolves it.
+        next(stdlib?(dep.name) ? [:l, dep.name] : nil) if versions.empty?
 
         sorted = versions.sort_by { |d| Gem::Version.new(File.basename(d)) }
         best = sorted.reverse.find { |d| dep.requirement.satisfied_by?(Gem::Version.new("#{File.basename(d)}.0")) } || sorted.last
         next if File.expand_path(best) == own
 
-        " -s #{best.shellescape}"
-      end.join
+        [:s, best]
+      end
     rescue StandardError
-      ""
+      []
+    end
+
+    def dep_sig_args(config, sig)
+      dep_sigs(config, sig).map { |k, v| " -#{k} #{v.shellescape}" }.join
+    end
+
+    def manifest_libraries(dir)
+      m = File.join(dir, "manifest.yaml")
+      File.exist?(m) ? Array((YAML.safe_load_file(m) || {})["dependencies"]).map { _1["name"] } : []
+    end
+
+    def stdlib?(name)
+      require "rbs"
+      File.directory?(File.join(RBS::Repository::DEFAULT_STDLIB_ROOT, name))
+    rescue LoadError
+      false
     end
 
     # The .rbs files of a signature dir (or the file itself). Like `rbs
