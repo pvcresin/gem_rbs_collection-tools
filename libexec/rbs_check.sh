@@ -9,7 +9,8 @@
 #   -d SUITE   test double suite: rspec | minitest
 #   -o PREFIX  output prefix. Enables "log mode": type errors are recorded
 #              to PREFIX.errors.tsv (with counts) instead of raised, and
-#              PREFIX.checked.tsv counts every checked call.
+#              PREFIX.checked.tsv counts every checked call, PREFIX.errors.jsonl
+#              has one machine-readable record per distinct error.
 #   -c FILE    also record every method call (for coverage_report.rb)
 #   -h         show this help
 #
@@ -43,7 +44,7 @@ export RBS_TEST_TARGET="$TARGETS" RBS_TEST_OPT="$opt" RBS_TEST_LOGLEVEL=error
 [ -n "$SKIP" ] && export RBS_TEST_SKIP="$SKIP"
 [ -n "$DBL" ] && export RBS_TEST_DOUBLE_SUITE="$DBL"
 ro="-I$RBSLIB -r$HERE/rbs_preload.rb -rrbs/test/setup -r$HERE/rbs_hook_fix.rb"
-if [ -n "$OUT" ]; then export RBS_ERR_OUT="$(realpath -m "$OUT")"; rm -f "$RBS_ERR_OUT.checked.tsv" "$RBS_ERR_OUT.errors.tsv"; ro="$ro -r$HERE/log_errors.rb"; fi
+if [ -n "$OUT" ]; then export RBS_ERR_OUT="$(realpath -m "$OUT")"; rm -f "$RBS_ERR_OUT.checked.tsv" "$RBS_ERR_OUT.errors.tsv" "$RBS_ERR_OUT.errors.jsonl"; ro="$ro -r$HERE/log_errors.rb"; fi
 if [ -n "$CALLS" ]; then export TRACE_OUT="$(realpath -m "$CALLS")"; rm -f "$TRACE_OUT"; ro="$ro -r$HERE/trace_calls.rb"; fi
 export RUBYOPT="$ro ${RUBYOPT:-}"
 # `bundle exec <cmd>` normally loads <cmd> inside the bundle process, where

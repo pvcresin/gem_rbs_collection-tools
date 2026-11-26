@@ -343,6 +343,19 @@ positional or an explicit nil return, private redeclarations, manifest
 entries), keeps the file parseable, and lists what still needs you; review
 its diff like any other edit.
 
+Before verifying a fresh draft, `gem-types repair --workdir W --sig
+gems/<gem>/<ver> [--test-cmd "<suite>" --test-cmd "<call-every-method
+script>"] [--rounds 3] [--dry-run]` removes false type errors: it runs the
+commands under runtime type checking and unions the class the gem really
+passed or returned into each rejecting slot (text spliced in place, rerun
+until nothing changes). It skips calls that raised (negative tests), test
+doubles, anonymous and test-defined classes, plain `Object`, returns from
+test-defined receivers and classes without RBS; overload and arity errors
+are only reported. Review every change it prints (also in
+`W/evidence/repair.json`): a test passing an odd value it happens to
+tolerate (`t.execute(0)`) widens too, so drop what the source does not
+support.
+
 Trust `verify`'s exit status: 0 only when exists, Steep and a complete
 checked test run all pass. If it prints `CHECKED RUN INCOMPLETE`, fix the
 run before writing any suite numbers into a PR.
