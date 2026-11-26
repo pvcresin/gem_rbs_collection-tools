@@ -124,6 +124,13 @@ if [ -d "$W/repo" ]; then
     fi
   fi
   printf '%s\n' "$root" > "$W/repo_dir"
+  # RBS kept in the repository (even when the package leaves it out) is
+  # what maintainers want fixed: a collection copy is not what users load
+  # (ruby/gem_rbs_collection#1195).
+  up=$(cd "$root" && git ls-files 'sig/*.rbs' 'sig/**/*.rbs' 2>/dev/null | head -1 || true)
+  if [ -n "$up" ]; then
+    echo "WARNING: the upstream repository has RBS for $gem ($up): fix the signatures upstream instead of adding them to gem_rbs_collection" >&2
+  fi
   # A saved config from an earlier run keeps pointing at the gem's root.
   if [ -f "$W/gem-types.json" ]; then
     ruby -rjson -e 'f, r = ARGV; c = JSON.parse(File.read(f)); c["repo"] == r or File.write(f, JSON.pretty_generate(c.merge("repo" => r)))' \

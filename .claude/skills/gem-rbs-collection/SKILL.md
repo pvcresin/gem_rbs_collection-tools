@@ -90,6 +90,20 @@ ruby/gem_rbs_collection. Untyped gems are the priority. Without
 is usually the better list. Also skip gems that are effectively dead or
 whose API is mostly C extension or metaprogramming; say why.
 
+
+Gems whose upstream repository has RBS for them (sig/ at the root, or
+gems/<name>/sig/ in a monorepo such as aws-sdk-ruby) are skipped even when
+the package leaves sig/ out: maintainers ask to fix those upstream, since
+the collection's copy is not what users load (ksss on
+ruby/gem_rbs_collection#1195). `prepare` warns about them too.
+
+`pick --improve` lists gems already in the collection whose signatures are
+the ones users load (no RBS in the package or the upstream repository),
+by downloads, with the newest version directory against the latest
+release, the share of untyped declarations, and whether the gem has
+reviewers (then a reviewer must approve). Improving those helps users
+more than adding a gem nobody would load.
+
 ## 2. Gather type evidence
 
 For each gem (details: `docs/evidence.md`):
