@@ -308,22 +308,63 @@ module GemTypes
       return [nil, []] unless req
 
       out = File.join(w, "run", "namespace.txt")
-      sh(env.merge("RUBYOPT" => "-I#{lib}"), "bundle exec ruby -e #{namespace_script(req, lib, gem).shellescape} > #{out.shellescape}",
+      deps_out = File.join(w, "run", "requires.txt")
+      FileUtils.rm_f(deps_out)
+      sh(env.merge("RUBYOPT" => "-I#{lib}"),
+         "bundle exec ruby -e #{namespace_script(req, lib, gem, runtime_deps(w), deps_out).shellescape} > #{out.shellescape}",
          root, File.join(w, "run", "namespace.log"))
-      [req, File.exist?(out) ? File.readlines(out, chomp: true).reject(&:empty?).sort : []]
+      # Requires that loaded (dependencies first: faraday-net_http's lib
+      # needs Faraday loaded), for `collect --require`.
+      loaded = File.exist?(deps_out) ? File.readlines(deps_out, chomp: true).reject(&:empty?) : []
+      [(loaded + [req]).uniq.join(","), File.exist?(out) ? File.readlines(out, chomp: true).reject(&:empty?).sort : []]
+    end
+
+    def runtime_deps(w)
+      require "rubygems/package"
+      pkg = Dir[File.join(w, "*.gem")].first or return []
+      Gem::Package.new(pkg).spec.runtime_dependencies.map(&:name)
+    rescue StandardError
+      []
     end
 
     # Ruby that prints those names. A constant defined by the gem's own
     # native extension (FFI, from ffi_c.so of the installed ffi gem) counts
     # as the gem's when the gem's lib adds to it.
-    def namespace_script(req, lib, gem = nil)
+    def namespace_script(req, lib, gem = nil, deps = [], deps_out = nil)
       native = gem ? %r{/#{Regexp.escape(gem)}-\d[^/]*/.*\.(so|bundle|dll)\z} : /(?!)/
       <<~RUBY
         name_of = Module.instance_method(:name)
         before_consts = Object.constants
         before = {}
         ObjectSpace.each_object(Module) { |m| before[m.__id__] = true }
-        require #{req.dump}
+        # The gem's runtime dependencies first, as an application would
+        # have them loaded (taken after the snapshot: what they define is
+        # filtered out below by where it was defined).
+        loaded = []
+        #{deps.inspect}.each do |d|
+          [d, d.tr("-", "/")].uniq.each do |r|
+            begin
+              require r
+              loaded << r
+              break
+            rescue LoadError, StandardError
+              next
+            end
+          end
+        end
+        # A plugin gem (faraday-net_http, rack-*) may need its host library
+        # loaded first without depending on it: retry after requiring the
+        # gem name's first part.
+        begin
+          require #{req.dump}
+        rescue NameError, NoMethodError, LoadError
+          host = #{gem.to_s.split(/[-_]/).first.to_s.dump}
+          raise if host.empty? || loaded.include?(host)
+          require host
+          loaded << host
+          require #{req.dump}
+        end
+        File.write(#{deps_out.to_s.dump}, loaded.join("\n")) unless #{deps_out.to_s.dump}.empty?
         lib = #{File.join(lib, '').dump}
         native = Regexp.new(#{native.source.dump})
         loc_of = lambda do |mod, c|

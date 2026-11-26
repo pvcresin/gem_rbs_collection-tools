@@ -76,7 +76,16 @@ elif [ -n "$src" ]; then
         grep -E "^(v|release-|releases/v|$gem-|${gem}_|)$ver$" | head -1 || true)
   if [ -n "$tag" ]; then
     git -c advice.detachedHead=false clone -q --depth 1 --branch "$tag" "$src" "$W/repo" && echo "repo: $src @ $tag"
-  else
+    # A tag named like the version can belong to another project in a
+    # monorepo (aws-sdk-ruby's v1.4.1 is aws-sdk 1.x, not aws-eventstream
+    # 1.4.1): the checkout must contain this gem.
+    if [ -d "$W/repo" ] && [ -z "$(cd "$W/repo" && git ls-files "$gem.gemspec" "*/$gem.gemspec" "lib/$gem.rb" "lib/${gem//-//}.rb" "*/lib/$gem.rb" "*/lib/${gem//-//}.rb" 2>/dev/null | head -1)" ]; then
+      echo "repo: tag $tag does not contain $gem; looking for the version commit instead" >&2
+      rm -rf "$W/repo"
+      tag=""
+    fi
+  fi
+  if [ -z "$tag" ]; then
     # No tag: take the default branch at the commit that set the version
     # (the oldest commit whose version file or gemspec diff has the version
     # as a quoted string, or a VERSION file with just the version).

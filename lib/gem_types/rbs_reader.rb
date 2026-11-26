@@ -56,11 +56,15 @@ module GemTypes
     # parse; one such line must not lose the whole file. Blank the offending
     # line and try again, up to MAX_SKIPPED_LINES times.
     def self.parse_tolerantly(text, name)
-      lines = text.lines
+      # Tool output can contain NUL bytes, which the parser rejects outright.
+      lines = text.delete("\0").lines
       skipped = 0
       loop do
         _, _, decls = RBS::Parser.parse_signature(RBS::Buffer.new(name: name, content: lines.join))
         return decls
+      rescue ArgumentError => e
+        warn "#{name}: #{e.message} (giving up on this file)"
+        return nil
       rescue RBS::ParsingError => e
         line = e.location&.start_line
         idx = line && line - 1
