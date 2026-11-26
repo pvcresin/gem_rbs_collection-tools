@@ -37,6 +37,13 @@ module GemTypes
 
     class Base
       attr_reader :config
+      # Extra environment for test runs (collect gives concurrent runs their
+      # own TMPDIR).
+      attr_accessor :extra_env
+      # Seconds a command may run (collect limits the static tools: TypeProf
+      # can run for most of an hour on rake and write nothing).
+      attr_accessor :time_limit
+      attr_reader :timed_out
 
       def initialize(config) = @config = config
       def name = self.class.name.split("::").last.gsub(/(?<!^)([A-Z])/, '_\1').downcase
@@ -52,8 +59,14 @@ module GemTypes
         # Tools such as YARD read files in the locale encoding.
         base = { "LANG" => "C.UTF-8", "LC_ALL" => "C.UTF-8" }.merge(base) unless base["LANG"].to_s.include?("UTF-8")
         full = base.merge(env).compact
+        cmd = "timeout -k 10 #{time_limit.to_i} bash -c #{cmd.shellescape}" if time_limit
         ok = system(full, "bash", "-c", cmd, chdir: chdir, out: log, err: %i[child out], unsetenv_others: true)
-        warn "#{name}: command failed (see #{log})" unless ok
+        @timed_out = time_limit && $?.exitstatus == 124
+        if @timed_out
+          warn "#{name}: stopped after #{time_limit.to_i}s (GEM_TYPES_STATIC_TIMEOUT)"
+        elsif !ok
+          warn "#{name}: command failed (see #{log})"
+        end
         ok
       end
 
@@ -68,7 +81,7 @@ module GemTypes
         rubyopt = ["-r#{hook}", config.env["RUBYOPT"], outer].compact.reject(&:empty?).join(" ")
         # `bundle exec rspec` normally loads rspec inside the bundle process,
         # where the hooks have skipped themselves; make it exec instead.
-        full = config.env.merge(env).merge("RUBYOPT" => rubyopt, "BUNDLE_DISABLE_EXEC_LOAD" => "true")
+        full = config.env.merge(extra_env || {}).merge(env).merge("RUBYOPT" => rubyopt, "BUNDLE_DISABLE_EXEC_LOAD" => "true")
         ok = sh(full, GemTypes.timed(config.test_cmd), chdir: config.repo, log: File.join(config.out, "#{name}.log"))
         warn "#{name}: no output recorded (did the test command run Ruby?)" if Dir[File.join(dir, "**", "*")].none? { |f| File.file?(f) }
         ok

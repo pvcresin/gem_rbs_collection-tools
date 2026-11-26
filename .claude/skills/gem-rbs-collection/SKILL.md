@@ -118,7 +118,12 @@ For each gem (details: `docs/evidence.md`):
    run; TypeProf, tyda and Rigor (if Ruby 4.0 is set up, see
    docs/evidence.md) over lib + tests; YARD docs via Sord (the documented
    contract); `rbs prototype runtime` for the method list and parameter
-   names. Static sources run in parallel with the test runs.
+   names. Static sources run in parallel with the test runs, and are
+   reused while their inputs are unchanged. rbs-trace runs only when
+   TracePoint recorded nothing (it adds no public method TracePoint misses);
+   `--sources tracepoint,rbs_trace` runs it anyway. Test runs go two at a
+   time; use `--jobs 1` if the suite uses a fixed port or file.
+   `GEM_TYPES_FRESH=1` reruns everything.
 3. `gem-types draft --workdir W [--existing <current .rbs>]` writes
    `draft.rbs` (one signature per method from the best source, with a
    comment naming the sources) and `report.md` (every source's signature,

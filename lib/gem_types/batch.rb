@@ -141,7 +141,8 @@ module GemTypes
     def run_tests_with_fixes(w, env, test_cmd, logs)
       log = File.join(logs, "tests.log")
       root = gem_root(w)
-      sh(env, timed(test_cmd), root, log)
+      ok = sh(env, timed(test_cmd), root, log)
+      kept_log = log
       text = File.read(log, encoding: "UTF-8")
       counts = Verify.test_counts(text)
       tried = []
@@ -167,17 +168,28 @@ module GemTypes
         end
         runs += 1
         log2 = File.join(logs, "tests-fix#{runs}-#{fix[:name].tr('^a-zA-Z0-9_-', '_')}.log")
-        sh(new_env, timed(test_cmd), root, log2)
+        ok2 = sh(new_env, timed(test_cmd), root, log2)
         t2 = File.read(log2, encoding: "UTF-8")
         c2 = Verify.test_counts(t2)
         if better?(counts, c2, changed: t2 != text && !fix[:gem].nil?)
-          counts, text, env = c2, t2, new_env
+          counts, text, env, ok, kept_log = c2, t2, new_env, ok2, log2
           File.write(File.join(w, "gem-types.json"), JSON.pretty_generate(repo: root, env: env, test_cmd: test_cmd))
         elsif fix[:gem]
           File.write(gemfile, before)
         end
       end
+      save_plain_run(w, root, env, test_cmd, kept_log, ok)
       [counts, env]
+    end
+
+    # Records the kept run as the workdir's plain test run, which `verify`
+    # reuses while the inputs are unchanged (see PlainRun).
+    def save_plain_run(w, root, env, test_cmd, log, ok)
+      cfg = Config.new(repo: root, lib_dirs: ["lib"], test_dirs: %w[test spec], ns: [], requires: [],
+                       test_cmd: test_cmd, env: env.transform_keys(&:to_s), out: File.join(w, "evidence"))
+      PlainRun.new(cfg).store(log, ok)
+    rescue StandardError => e
+      warn "#{File.basename(w)}: could not record the plain run (#{e.message})"
     end
 
     # Whether a run with a fix (c2) is better than the run without (c1).

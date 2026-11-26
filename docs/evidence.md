@@ -51,8 +51,25 @@ $T draft --workdir $W [--existing <gem_rbs_collection>/gems/netrc/0.11/netrc.rbs
   are saved in `$W/gem-types.json`.
 - Options: `--require` (what to require for `prototype`, default from the
   namespace), `--lib` (default `lib`), `--tests` (default `test,spec`),
-  `--jobs N` (test runs in parallel; default 1 because test suites may share
-  files or ports). Static sources always run in parallel with the test runs.
+  `--jobs N` (test runs at a time; default 2). Static sources always run in
+  parallel with the test runs.
+- Speed: tracepoint and lumitrace run the suite at the same time, each with
+  its own `TMPDIR`; a run that counts fewer tests or more failures than the
+  other (or than the saved plain run) is repeated alone, and `--jobs 1`
+  runs them one at a time (suites that share a port or a fixed file path).
+  `rbs_trace` runs only when tracepoint recorded nothing or crashed early:
+  measured over 35 gems, with tracepoint's evidence it added no public
+  method defined in the gem (its extra methods were private ones, which the
+  draft leaves out, and inherited methods recorded again on each subclass),
+  and its extra flags were mostly `-> nil` overloads from raising calls.
+  `--sources ...,rbs_trace` runs it anyway. Static sources are reused while
+  the code, tests, settings and tool versions are unchanged
+  (`evidence/.cache`), and are stopped after `GEM_TYPES_STATIC_TIMEOUT`
+  seconds (default 120; TypeProf ran for 40 minutes on rake and wrote
+  nothing). `GEM_TYPES_FRESH=1` ignores every saved result.
+- `run` saves its plain test run (`evidence/plain-run.json`); `verify`
+  reuses it, and its own, while the test command, environment, code, tests
+  and lock file are unchanged.
 - Rigor needs Ruby 4.0. gem-types uses `RIGOR_RUBY`, or else the newest
   rbenv-installed Ruby 4.x, with rigortype in `RIGOR_GEM_HOME` (default
   `~/.gem/rigor`); otherwise the source is skipped. Setup:
