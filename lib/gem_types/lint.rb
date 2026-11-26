@@ -431,7 +431,7 @@ module GemTypes
         out << [m.key, "the source #{u[:yields].empty? ? 'takes a block (&block)' : 'yields'} but no overload declares one"]
       end
       if !with.empty? && without.empty? && with.all? { |mt| mt.block.required }
-        if u[:guarded] || u[:enum]
+        if (u[:guarded] || u[:enum]) && !u[:requires]
           why = u[:enum] ? "returns an Enumerator without a block" : "checks block_given?/the block"
           # An Enumerator overload makes the block optional by itself (with
           # `?{` the blockless call would match the first overload).

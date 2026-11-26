@@ -524,4 +524,25 @@ class LintTest < Minitest::Test
     assert_nil f.fix
     assert_equal [f], [f, ["A#x", "msg"]].uniq
   end
+
+  def test_block_required_by_a_raise_guard
+    found = lint(<<~RUBY, <<~RBS)
+      class A
+        def reap(n)
+          raise ArgumentError, "reap must receive a block" unless block_given?
+          yield n
+        end
+        def shutdown(&block)
+          raise ArgumentError, "needs a block" unless block
+          @b = block
+        end
+      end
+    RUBY
+      class A
+        def reap: (Integer n) { (Integer) -> void } -> void
+        def shutdown: () { () -> void } -> void
+      end
+    RBS
+    assert_equal [], found
+  end
 end

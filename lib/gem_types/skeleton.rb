@@ -178,7 +178,7 @@ module GemTypes
       if mts.none?(&:block) && takes
         # Required only when the method itself calls (or keeps) the block
         # unconditionally; a block it only passes on may be nil.
-        required = u[:enum] || (!u[:guarded] && (!u[:yields].empty? || u[:self_eval] || u[:stored]))
+        required = u[:enum] || u[:requires] || (!u[:guarded] && (!u[:yields].empty? || u[:self_eval] || u[:stored]))
         blk = RBS::Types::Block.new(type: block_function(yield_arity(u), nil), required: required,
                                     self_type: u[:self_eval] ? self_type(u) : nil)
         notes << "#{required ? '' : 'optional '}block added (the source #{u[:yields].empty? ? 'takes &block' : 'yields'})"
@@ -188,7 +188,7 @@ module GemTypes
       return mts if with.empty?
 
       passed_on = u[:forwarded] && u[:yields].empty? && !u[:self_eval] && !u[:stored]
-      if mts.all?(&:block) && with.all? { |mt| mt.block.required } && !u[:enum] && (u[:guarded] || passed_on)
+      if mts.all?(&:block) && with.all? { |mt| mt.block.required } && !u[:enum] && !u[:requires] && (u[:guarded] || passed_on)
         notes << (u[:guarded] ? "block optional (the source checks for it)" : "block optional (the source only passes it on: check the callee)")
         mts = mts.map { |mt| mt.update(block: with_block(mt.block, required: false)) }
       end

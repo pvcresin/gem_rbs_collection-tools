@@ -690,6 +690,27 @@ module GemTypes
       false
     end
 
+    # An `unless block_given?` / `unless blk` / `if !blk` / `if blk.nil?`
+    # whose body raises.
+    def raise_without_block?(n, blk)
+      return false unless n.is_a?(Prism::IfNode) || n.is_a?(Prism::UnlessNode)
+
+      c = n.predicate
+      given = lambda do |x|
+        (x.is_a?(Prism::CallNode) && x.receiver.nil? && %i[block_given? iterator?].include?(x.name)) ||
+          (blk && x.is_a?(Prism::LocalVariableReadNode) && x.name == blk)
+      end
+      missing = if n.is_a?(Prism::UnlessNode) then given.(c)
+                elsif c.is_a?(Prism::CallNode) && c.name == :! then given.(c.receiver)
+                elsif c.is_a?(Prism::CallNode) && c.name == :nil? then c.receiver && given.(c.receiver)
+                else false
+                end
+      return false unless missing
+
+      body = n.statements&.body || []
+      body.size == 1 && body.first.is_a?(Prism::CallNode) && %i[raise fail].include?(body.first.name) && body.first.receiver.nil?
+    end
+
     # Methods whose block runs with another self (DSL blocks need
     # `[self: X]` in the RBS).
     SELF_CHANGING = %i[instance_eval instance_exec class_eval class_exec module_eval module_exec
@@ -753,6 +774,11 @@ module GemTypes
         when Prism::IfNode, Prism::UnlessNode, Prism::AndNode, Prism::OrNode
           cond = n.respond_to?(:predicate) ? n.predicate : n.left
           u[:guarded] = true if blk && cond.is_a?(Prism::LocalVariableReadNode) && cond.name == blk
+          # `raise ArgumentError, "needs a block" unless block_given?`: the
+          # check makes the block required, not optional.
+          if raise_without_block?(n, blk)
+            u[:requires] = true
+          end
         when Prism::InstanceVariableWriteNode, Prism::InstanceVariableOrWriteNode, Prism::LocalVariableWriteNode,
              Prism::ClassVariableWriteNode, Prism::ConstantWriteNode
           u[:stored] = true if blk && n.value.is_a?(Prism::LocalVariableReadNode) && n.value.name == blk
