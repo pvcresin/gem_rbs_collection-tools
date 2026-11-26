@@ -220,8 +220,12 @@ if $PROGRAM_NAME == __FILE__
               improve: improve ? improvement(gdir, latest["number"]) : nil }
   end
   if improve
+    # Room for improvement, then download rank: a newer release than the
+    # newest directory counts as much as an all-untyped RBS. Gems with
+    # nothing to improve go last.
     rows.select! { |r| r[:improve] }
-    rows.sort_by! { |r| r[:rank] }
+    gap = ->(i) { (i[:outdated] ? 0.5 : 0) + i[:untyped] }
+    rows.sort_by! { |r| g = gap.(r[:improve]); [g >= 0.5 ? 0 : 1, r[:rank]] }
   elsif min_months
     rows.select! { |r| r[:months] >= min_months }
     rows.sort_by! { |r| [r[:status], r[:rank]] }
