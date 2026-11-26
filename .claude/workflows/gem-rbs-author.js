@@ -49,7 +49,7 @@ Setup done: workdir W=${x.workdir} (repo/ = upstream at the release tag, pkg/ = 
 ${x.notes ? 'Notes: ' + x.notes : ''}
 Output: only inside ${x.worktree}/gems/${x.gem}/ : ${x.ver}/${x.gem}.rbs, ${x.ver}/_test/test.rb (+ _test/test.rbs if needed), .rubocop.yml (copy gems/netrc/.rubocop.yml), manifest.yaml only for stdlib deps. No _reviewers.yaml. Do not commit, push or touch GitHub. Never execute code from the worktree's gems/ except via bin/test.
 
-Rules: type the public API; leave out internals and @api private and say what; calls that only raise in the gem's tests stay rejected; no -> bot overloads for errors; read every branch (other platforms, error paths, early returns inside blocks); proper parameter names.
+Rules: when you change a declaration, re-check every declared method that forwards to it or returns its result; type the public API; leave out internals and @api private and say what; calls that only raise in the gem's tests stay rejected; no -> bot overloads for errors; read every branch (other platforms, error paths, early returns inside blocks); proper parameter names.
 
 Verify, all required (T=${T}/exe/gem-types):
 1. cd ${x.worktree} && bin/test gems/${x.gem}/${x.ver}; bundle exec rubocop gems/${x.gem}
@@ -62,7 +62,7 @@ const reviewPrompt = x => `You are reviewing a proposed RBS file for the Ruby ge
 
 RBS (read only, do not edit): ${sigdir(x)}/ . Gem source: ${x.workdir}/repo/lib (packaged copy in ${x.workdir}/pkg). Run Ruby: cd ${x.workdir}/repo && ${env(x)} bundle exec ruby -Ilib ... ; scripts go in ${x.workdir}/review/. Runtime checking: ${T}/exe/gem-types check -s <copy of the sig dir> -t "${x.ns}" -- <cmd> (it does not check inherited methods). Never execute anything from gem_rbs_collection's gems/.
 
-For every declaration check: where it is defined (instance/singleton, include/extend, public); parameters (required/optional/rest/keywords, block required/optional, block args and self); every possible return value on every branch (nil, false vs bool, Enumerator without block, subclass vs plain Array/Hash, early return from a block); whether a parameter type rejects values the docs or the gem's own tests pass in normal use (calls that only raise should be rejected); aliases, attrs, constants, superclasses. Prove each suspicion with a source line or a run (command + output). Report only confirmed issues; mark unsure ones nit.`
+For every declaration check: where it is defined (instance/singleton, include/extend, public); parameters (required/optional/rest/keywords, block required/optional, block args and self); every possible return value on every branch (nil, false vs bool, Enumerator without block, subclass vs plain Array/Hash, early return from a block); whether a parameter type rejects values the docs or the gem's own tests pass in normal use (calls that only raise should be rejected); aliases, attrs, constants, superclasses; methods that forward to another declared method (delegators, `tokens.each(&blk)`) must agree with it; parameters typed Hash[K, V]/Array[T] must accept the subclasses the gem itself passes (generics are invariant). Prove each suspicion with a source line or a run (command + output). Report only confirmed issues; mark unsure ones nit.`
 
 const results = await pipeline(
   args.items,

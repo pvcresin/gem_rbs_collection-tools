@@ -360,6 +360,64 @@ module GemTypes
       out
     end
 
+    # Parameters declared as Hash[K, V] / Array[T] with concrete type
+    # arguments that the test suite passed a subclass of Hash/Array to
+    # (faraday_middleware's Chunked#chunked_encoding? gets a
+    # Faraday::Utils::Headers < Hash[Symbol | String, untyped]). Generic
+    # classes are invariant in RBS, so the declaration may reject the gem's
+    # own value: use the subclass, an interface, or untyped arguments.
+    # Returns [[key, slot, message], ...].
+    def invariant_params(config, sig)
+      tp = Sources.for("tracepoint", config)
+      observed = tp.read
+      return [] if observed.empty?
+
+      anc = tp.ancestors
+      rbs = RbsReader.read_files(sig_files(sig))
+      out = []
+      rbs.methods.each do |key, sigs|
+        e = observed[key] or next
+        owner = GemTypes.split_key(key).first
+        seen = observed_slots(e)
+        sigs.each do |str|
+          mt = RBS::Parser.parse_method_type(str) rescue next
+          f = mt.type
+          next unless f.is_a?(RBS::Types::Function)
+
+          slots = {}
+          (f.required_positionals + f.optional_positionals).each_with_index { |p, i| slots[[:pos, i]] = p.type }
+          slots[[:rest]] = f.rest_positionals.type if f.rest_positionals
+          (f.required_keywords.to_a + f.optional_keywords.to_a).each { |k, p| slots[[:key, k.to_s]] = p.type }
+          slots.each do |slot, type|
+            generic = flat_class_instances(type).select do |t|
+              %w[Hash Array].include?(t.name.to_s.delete_prefix("::")) && t.args.any? && !t.args.all? { |a| a.is_a?(RBS::Types::Bases::Any) }
+            end
+            next if generic.empty?
+
+            (seen[slot] || []).each do |o|
+              head = o[/\A[\w:]+/] or next
+              generic.each do |g|
+                base = g.name.to_s.delete_prefix("::")
+                next if head == base || !(anc[head] || core_ancestors(head) || []).include?(base)
+
+                out << [key, slot_label(slot, e), "the tests passed a #{head} (a #{base} subclass); #{g} is invariant and may reject it"]
+              end
+            end
+          end
+        end
+      end
+      out.uniq
+    end
+
+    def flat_class_instances(type)
+      case type
+      when RBS::Types::Union then type.types.flat_map { |t| flat_class_instances(t) }
+      when RBS::Types::Optional then flat_class_instances(type.type)
+      when RBS::Types::ClassInstance then [type]
+      else []
+      end
+    end
+
     def observed_slots(e)
       h = {}
       i = 0

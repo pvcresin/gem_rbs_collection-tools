@@ -199,6 +199,8 @@ when "verify"
   end
   puts "", "== lint (mistakes the source shows directly)"
   lint = GemTypes::Verify.lint(cfg, sig)
+  inv = GemTypes::Verify.invariant_params(cfg, sig)
+  lint += inv.map { |key, slot, msg| [key, "#{slot}: #{msg}"] }
   puts "  nothing" if lint.empty?
   lint.each { |key, msg| puts "  #{key}: #{msg}" }
   puts "", "== possibly too wide (declared, never seen in the test suite)"
