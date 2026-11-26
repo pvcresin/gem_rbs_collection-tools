@@ -83,6 +83,21 @@ rigor, tyda, yard, prototype), with a comment saying where it came from:
   def self.read: (?String path) -> Netrc
 ```
 
+The signature's structure is then corrected from the method's def (read
+with Prism; the types stay those of the evidence, `untyped` where there is
+none), and each correction is listed after `structure:` in the comment:
+parameter kinds, count and names and the keyword set; no block when the
+source neither yields nor takes one; a block when it does (optional when it
+checks `block_given?`/the block or only passes it on) with the parameter
+count every `yield` passes; a `() -> Enumerator[...]` overload when it
+returns `to_enum`; `[self: X]` when the block goes to
+instance_eval/instance_exec/... (X guessed from the receiver: check it);
+nil in the return type for `return`/`return nil`/a `nil` value, and for an
+`if`/`case` without `else` (marked, since the branches may be exhaustive);
+`def self?.` for module_function; and a module doing
+`private(*Other.instance_methods(false))` redeclares Other's methods under
+`private`. A draft has no structural `gem-types lint` findings.
+
 `$W/report.md`: per source counts, a "Needs attention" list, then every
 method with each source's signature and tracepoint's call shapes:
 

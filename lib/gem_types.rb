@@ -273,6 +273,7 @@ end
 require_relative "gem_types/rbs_reader"
 require_relative "gem_types/sources"
 require_relative "gem_types/merger"
+require_relative "gem_types/skeleton"
 require_relative "gem_types/verify"
 require_relative "gem_types/lint"
 require_relative "gem_types/batch"

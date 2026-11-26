@@ -11,6 +11,10 @@ module GemTypes
       @evidence = evidence
       @attrs = defs ? defs.attrs : {}
       @hidden = defs ? defs.hidden : {}
+      # The def of each method (the last one when it is defined twice, as
+      # Lint reads them), for correcting a drafted signature's structure.
+      @defs = defs.is_a?(DefIndex) ? defs.to_h { |d| [d[:key], d] } : {}
+      @privatized = privatized_defs(defs.respond_to?(:privatized) ? defs.privatized : [])
       @classes = classes
       @existing = existing
       @shape_lines = group_shapes(shapes)
@@ -83,46 +87,84 @@ module GemTypes
         sup = info[:kind] == "class" && info[:super] && !%w[Object BasicObject].include?(info[:super]) ? " < #{superclass(info)}" : ""
         out << "#{info[:kind]} #{owner}#{sup}"
         ks -= hidden_keys
+        priv = @privatized[owner] || {}
+        privates = []
         ks.each do |k|
           _, sep, name = GemTypes.split_key(k)
-          prefix = sep == "." ? "self." : ""
-          base = k.delete_suffix("=")
-          rbs, src = pick(k)
-          attr = @attrs[base]
-          # attr_reader :x with a hand-written `def x=` (or attr_writer :y
-          # with `def y`): the def is not part of the attribute.
-          attr = nil if attr && (k == base ? attr[:kind] == "writer" : attr[:kind] == "reader")
-          if attr
-            kind = attr[:kind]
-            # A private writer (`private :x=`) leaves a public reader.
-            writer_hidden = kind == "accessor" && @hidden.key?("#{base}=") && !@existing.key?("#{base}=")
-            kind = "reader" if writer_hidden
-            next if k.end_with?("=") && kind == "accessor" && ks.include?(base)
-
-            writer = if k != base then [rbs, src]
-                     elsif kind != "reader" && keys.include?("#{base}=") then pick("#{base}=")
-                     end
-            type = attr_type(k == base && src ? rbs : nil, writer && writer[1] ? writer[0] : nil)
-            kind = "writer" if kind == "accessor" && !ks.include?(base)
-            out << "  # #{comment(k, src)} | attr_#{attr[:kind]} in the source#{writer_hidden ? ' (writer is private)' : ''}"
-            out << "  attr_#{kind} #{prefix}#{method_name(name.delete_suffix('='))}: #{type}"
-            next
-          end
-          if !pick_direct(k) && (target = alias_target(k))
-            target_key = "#{owner}#{sep}#{target}"
-            if ks.include?(target_key)
-              out << "  # #{comment(k, 'alias')}"
-              out << "  alias #{prefix}#{method_name(name)} #{prefix}#{method_name(target)}"
-              next
-            end
-          end
-          rbs = void_return(rbs) if name == "initialize" && sep == "#"
-          out << "  # #{comment(k, src)}"
-          out << "  def #{prefix}#{method_name(name)}: #{rbs}"
+          out.concat(entry(owner, k, ks)) unless sep == "#" && priv.key?(name)
+        end
+        # A module doing `private(*Other.instance_methods(false))`: includers
+        # get Other's methods as private ones.
+        priv.sort.each do |name, src_key|
+          # The better evidence of the two keys (runtime sources record
+          # the call under the defining module).
+          found = [pick_direct("#{owner}##{name}"), pick_direct(src_key)].compact.min_by { |_, s| PRIORITY.index(s) }
+          rbs, src = found || pick(src_key)
+          rbs, notes = Skeleton.apply(src_key, rbs, @defs[src_key])
+          privates << "  # #{comment(src_key, src)} | from #{src_key}#{notes_text(notes)}"
+          privates << "  def #{method_name(name)}: #{rbs}"
+        end
+        unless privates.empty?
+          sources = priv.values.map { |x| GemTypes.split_key(x).first }.uniq.join(", ")
+          out << "" << "  private" << "" << "  # #{owner} makes #{sources}'s methods private (private(*X.instance_methods(false)))"
+          out.concat(privates)
         end
         out << "end" << ""
       end
       out.join("\n")
+    end
+
+    # The draft lines of one method (or attribute) of `owner`.
+    def entry(owner, k, ks)
+      _, sep, name = GemTypes.split_key(k)
+      prefix = sep == "." ? "self." : ""
+      base = k.delete_suffix("=")
+      rbs, src = pick(k)
+      attr = @attrs[base]
+      # attr_reader :x with a hand-written `def x=` (or attr_writer :y
+      # with `def y`): the def is not part of the attribute.
+      attr = nil if attr && (k == base ? attr[:kind] == "writer" : attr[:kind] == "reader")
+      if attr
+        kind = attr[:kind]
+        # A private writer (`private :x=`) leaves a public reader.
+        writer_hidden = kind == "accessor" && @hidden.key?("#{base}=") && !@existing.key?("#{base}=")
+        kind = "reader" if writer_hidden
+        return [] if k.end_with?("=") && kind == "accessor" && ks.include?(base)
+
+        writer = if k != base then [rbs, src]
+                 elsif kind != "reader" && keys.include?("#{base}=") then pick("#{base}=")
+                 end
+        type = attr_type(k == base && src ? rbs : nil, writer && writer[1] ? writer[0] : nil)
+        kind = "writer" if kind == "accessor" && !ks.include?(base)
+        return ["  # #{comment(k, src)} | attr_#{attr[:kind]} in the source#{writer_hidden ? ' (writer is private)' : ''}",
+                "  attr_#{kind} #{prefix}#{method_name(name.delete_suffix('='))}: #{type}"]
+      end
+      if !pick_direct(k) && (target = alias_target(k))
+        target_key = "#{owner}#{sep}#{target}"
+        if ks.include?(target_key)
+          return ["  # #{comment(k, 'alias')}", "  alias #{prefix}#{method_name(name)} #{prefix}#{method_name(target)}"]
+        end
+      end
+      rbs, notes = Skeleton.apply(k, rbs, def_of(k))
+      rbs = void_return(rbs) if name == "initialize" && sep == "#"
+      # module_function: a singleton method and a private instance method.
+      prefix = "self?." if sep == "." && @hidden["#{owner}##{name}"] == "module_function"
+      ["  # #{comment(k, src)}#{notes_text(notes)}", "  def #{prefix}#{method_name(name)}: #{rbs}"]
+    end
+
+    # The def a drafted key stands for: its own, initialize for `.new`, the
+    # def of a method a module makes private from another one, or the
+    # nearest superclass's def of an inherited method.
+    def def_of(key, depth = 0)
+      owner, sep, name = GemTypes.split_key(key)
+      own = @defs[key] || (key.end_with?(".new") && @defs["#{owner}#initialize"]) ||
+            (sep == "#" && (src = @privatized.dig(owner, name)) ? @defs[src] : nil)
+      return own if own
+
+      sup = @classes.dig(owner, :super)&.delete_prefix("::")
+      return nil if sup.nil? || depth > 10 || %w[Object BasicObject].include?(sup)
+
+      def_of("#{sup}#{sep}#{name}", depth + 1)
     end
 
     # A method name as RBS needs it: names Ruby allows but RBS does not
@@ -299,6 +341,31 @@ module GemTypes
     def superclass(info)
       args = info[:super_args]
       args && !args.empty? ? "#{info[:super]}[#{args.join(', ')}]" : info[:super]
+    end
+
+    def notes_text(notes) = notes.empty? ? "" : " | structure: #{notes.join('; ')}"
+
+    # { module => { method name => key of the def } } for modules doing
+    # `private(*Other.instance_methods(false))`: Other's public and
+    # protected instance methods, Other resolved from the module's nesting.
+    def privatized_defs(list)
+      out = {}
+      list.each do |mod, other|
+        parts = mod.split("::")
+        cands = if other.start_with?("::") then [other.delete_prefix("::")]
+                else parts.size.downto(0).map { |i| (parts[0...i] + [other]).join("::") }
+                end
+        found = cands.find { |c| @defs.each_key.any? { |k| k.start_with?("#{c}#") } } or next
+        @defs.each_key do |k|
+          next unless k.start_with?("#{found}#")
+
+          name = k.delete_prefix("#{found}#")
+          next if name == "initialize" || %w[private module_function].include?(@hidden[k])
+
+          (out[mod] ||= {})[name] ||= k
+        end
+      end
+      out
     end
 
     def existing_evidence(key)
