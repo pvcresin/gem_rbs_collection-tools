@@ -761,6 +761,7 @@ module GemTypes
               u[:self_on] ||= self_on(n)
             else
               u[:forwarded] = true
+              (u[:forward_to] ||= []) << n.name.to_s
             end
           end
           if blk && (n.arguments&.arguments || []).any? { |a| a.is_a?(Prism::LocalVariableReadNode) && a.name == blk }

@@ -83,6 +83,28 @@ module GemTypes
       out = []
       names = nil
       modules = d[:classes].select { |c| c[:kind] == :module }.map { |c| c[:name] }
+      # Method names some def of the gem gives a block to (yield, &blk,
+      # block_given?, passing it on): a block forwarded only to names no
+      # def takes a block for is not used.
+      takers = {}
+      defined = {}
+      fwd = []
+      defs.each do |x|
+        n = x[:key].split(/[#.]/).last
+        defined[n] = true
+        u = x[:block] or next
+        takers[n] = true if !u[:yields].empty? || u[:guarded] || u[:self_eval] || u[:stored]
+        fwd << [n, u[:super] ? nil : u[:forward_to]] if u[:forwarded]
+      end
+      # A forwarder takes a block when one of its targets does (fixed point);
+      # a target outside the gem or a super call may take one.
+      loop do
+        added = fwd.select { |n, to| !takers[n] && (to.nil? || to.any? { |t| takers[t] || !defined.key?(t) }) }
+        break if added.empty?
+
+        added.each { |n, _| takers[n] = true }
+      end
+      takers.default_proc = proc { |_, n| !defined.key?(n) }
       d[:methods].each do |m|
         out.concat(rbs_only(m))
         out.concat(literal_return(m, by_key[m.key], names, modules))
@@ -90,7 +112,7 @@ module GemTypes
         src ||= by_key[m.key.sub(/\.new\z/, "#initialize")] if m.key.end_with?(".new")
         next unless src
 
-        out.concat(blocks(m, src))
+        out.concat(blocks(m, src, takers))
         out.concat(super_block(m, src, d))
         out.concat(arity(m, src))
         out.concat(nil_return(m, src))
@@ -146,7 +168,9 @@ module GemTypes
     # --- checks on the RBS alone ---
 
     PROTOCOL = {
-      "==" => %w[bool], "!=" => %w[bool], "eql?" => %w[bool], "equal?" => %w[bool], "===" => %w[bool boolish],
+      # bool? where the source returns nil for unrelated objects (an if
+      # without else), as httparty's Headers#== does.
+      "==" => %w[bool bool? boolish], "!=" => %w[bool bool? boolish], "eql?" => %w[bool bool? boolish], "equal?" => %w[bool], "===" => %w[bool bool? boolish],
       "hash" => %w[Integer], "to_s" => %w[String], "inspect" => %w[String], "to_str" => %w[String],
       "to_sym" => %w[Symbol], "to_i" => %w[Integer], "to_int" => %w[Integer], "to_a" => nil,
       "respond_to_missing?" => %w[bool], "initialize" => %w[void]
@@ -423,12 +447,13 @@ module GemTypes
 
     # Required vs optional block, a block the RBS forgets, yield arity,
     # Enumerator without a block, `[self: X]` for DSL blocks.
-    def blocks(m, src)
+    def blocks(m, src, takers = Hash.new(true))
       u = src[:block] or return []
       out = []
       with = m.overloads.select(&:block)
       without = m.overloads.reject(&:block)
-      takes = !u[:yields].empty? || u[:guarded] || u[:self_eval] || u[:stored] || (u[:named] && u[:forwarded])
+      used_fwd = u[:forwarded] && (u[:forward_to].nil? || u[:super] || u[:forward_to].any? { |n| takers[n] })
+      takes = !u[:yields].empty? || u[:guarded] || u[:self_eval] || u[:stored] || (u[:named] && used_fwd)
       if with.empty? && takes
         out << [m.key, "the source #{u[:yields].empty? ? 'takes a block (&block)' : 'yields'} but no overload declares one"]
       end
