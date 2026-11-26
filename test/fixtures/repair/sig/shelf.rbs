@@ -1,0 +1,9 @@
+class Shelf
+  # Items are strings (deliberately too narrow for the test below).
+  def initialize: () -> void
+  def add: (String item) -> self
+  def first: () -> String
+  def check: (String x) -> String
+  def pick: (String) -> String
+          | (Integer) -> Integer
+end

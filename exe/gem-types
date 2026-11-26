@@ -22,6 +22,9 @@
 #                       literals, protocol methods, manifest, test style; seconds)
 #   gem-types update    --workdir W --sig path/to/foo.rbs [--from OLD_VERSION] [--library json,uri]
 #                       (existing RBS vs a new version: source changes, gone/missing methods, steep, tests)
+#   gem-types repair    --workdir W --sig <rbs file or dir> [--test-cmd CMD]... [--rounds N] [--dry-run]
+#                       (runs the suite, or each --test-cmd, with runtime type checks and widens every slot
+#                       that rejected a value from a call that returned normally; report in W/evidence/repair.json)
 #   gem-types check     [rbs_check.sh options] -- <command>
 #   gem-types coverage  <file.rbs> <calls file>
 #
@@ -329,6 +332,34 @@ when "update"
     File.exist?(m) ? (YAML.load_file(m)["dependencies"] || []).map { _1["name"] } : []
   end
   exit GemTypes::Update.run(cfg, opts[:workdir], sig, from: opts[:from], libraries: libs)
+when "repair"
+  # --test-cmd may repeat (the suite and a call-every-method script); it is
+  # not saved in gem-types.json.
+  require_relative "../lib/gem_types/repair"
+  cmds = []
+  rounds = 3
+  dry_run = false
+  args = []
+  argv = ARGV.each
+  loop do
+    case (a = argv.next)
+    when "--test-cmd" then cmds << argv.next
+    when /\A--test-cmd=(.*)\z/m then cmds << $1
+    when "--rounds" then rounds = Integer(argv.next)
+    when "--dry-run" then dry_run = true
+    else args << a
+    end
+  end
+  opts = parse(args)
+  cfg = load_config(opts[:workdir], opts)
+  sig = File.expand_path(opts[:sig] || abort("--sig is required"))
+  cmds = [cfg.test_cmd || abort("no test command (pass --test-cmd)")] if cmds.empty?
+  begin
+    report = GemTypes::Repair.run(cfg, sig, cmds, rounds: rounds, dry_run: dry_run)
+  rescue GemTypes::Verify::SigError => e
+    exit GemTypes::Verify.sig_error(e)
+  end
+  exit(report[:skipped].empty? && report[:reported].empty? && report[:failed].empty? ? 0 : 1)
 when "steep"
   opts = parse(ARGV)
   cfg = load_config(opts[:workdir], opts)
