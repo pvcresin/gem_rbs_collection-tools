@@ -141,7 +141,13 @@ for optional blocks); block parameter types; `[self: instance]` for DSL
 blocks evaluated on the receiver; `attr_reader/writer/accessor` for attrs,
 Struct and Data members; `-> void` for `initialize`; private, protected and
 `@api private` / `@private` / `:nodoc:` methods left out (listed in the
-report); test doubles dropped from unions.
+report); test doubles dropped from unions. Structure follows the def
+(comment `structure: ...`): parameters and keywords, required/optional
+blocks and their yield arity, `() -> Enumerator[...]` for `to_enum`,
+`[self: X]` for instance_eval'd blocks (X is a guess), nil for
+`return`/`return nil`/`if` without `else`, `def self?.` for
+module_function, and `private` redeclarations for
+`private(*X.instance_methods(false))`.
 
 The draft is evidence, not the answer. Read the source for every method,
 name parameters properly, and decide unions.

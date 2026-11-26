@@ -320,13 +320,16 @@ module GemTypes
     #   from attr_* calls, Struct.new and Data.define members.
     # hidden: { key => reason } for private/protected methods and methods
     #   documented as internal (@api private, @private, :nodoc:).
-    attr_reader :attrs, :hidden
+    # privatized: [[module, other module], ...] for module bodies doing
+    #   `private(*Other.instance_methods(false))` (see Lint.privatized_mixins).
+    attr_reader :attrs, :hidden, :privatized
 
     def initialize(dirs)
       @defs = []
       @attrs = {}
       @hidden = {}
       @internal_ns = {}
+      @privatized = []
       dirs.flat_map { |d| Dir[File.join(d, "**/*.rb")] }.select { |f| File.file?(f) }.each do |file|
         result = Prism.parse_file(file)
         # Comments on lines of their own form the doc block above a
@@ -338,7 +341,9 @@ module GemTypes
           (c.trailing? ? @trailing : @comments)[c.location.start_line] = c.location.slice
         end
         visit(result.value, [], false, file)
+        Lint.walk_private(result.value, [], @privatized)
       end
+      @privatized.uniq!
     end
 
     def each(&) = @defs.each(&)
@@ -629,8 +634,30 @@ module GemTypes
                  params: params.compact, lasts: lasts.map(&loc), implicit_nil: implicit_nil, fixed_returns: fixed.uniq,
                  falsy_lasts: filtered.filter_map { |n, f| loc.(n) if f == :falsy },
                  truthy_lasts: filtered.filter_map { |n, f| loc.(n) if f == :truthy },
-                 legacy_consts: legacy_consts(node.body), early_nil: early_nil?(node.body),
+                 legacy_consts: legacy_consts(node.body), early_nil: early_nil?(node.body), shape: shape(node.parameters),
                  block: block_usage(node, params.compact.find { |x| x[:kind] == "block" }&.dig(:name)) }
+    end
+
+    # Every parameter of a def in order, anonymous ones included (`*`, `**`,
+    # `&`, destructuring `(a, b)`), as { kind:, name: } with kinds req, opt,
+    # rest, post (required after the rest), keyreq, key, keyrest, block,
+    # fwd (`...`) and nokey (`**nil`). name is nil when there is none.
+    def shape(p)
+      return [] unless p
+
+      name = ->(x) { x.respond_to?(:name) && x.name ? x.name.to_s : nil }
+      out = p.requireds.map { |x| { kind: "req", name: name.(x) } }
+      out.concat(p.optionals.map { |x| { kind: "opt", name: name.(x) } })
+      out << { kind: "rest", name: name.(p.rest) } if p.rest.is_a?(Prism::RestParameterNode)
+      out.concat(p.posts.map { |x| { kind: "post", name: name.(x) } })
+      p.keywords.each { |x| out << { kind: x.is_a?(Prism::RequiredKeywordParameterNode) ? "keyreq" : "key", name: name.(x) } }
+      case p.keyword_rest
+      when Prism::KeywordRestParameterNode then out << { kind: "keyrest", name: name.(p.keyword_rest) }
+      when Prism::ForwardingParameterNode then out << { kind: "fwd", name: nil }
+      when Prism::NoKeywordsParameterNode then out << { kind: "nokey", name: nil }
+      end
+      out << { kind: "block", name: name.(p.block) } if p.block
+      out
     end
 
     # A `return` / `return nil` anywhere in the body (not in a nested def
@@ -658,10 +685,11 @@ module GemTypes
     # How a method body uses its block:
     #   yields:     argument counts of `yield` / `blk.call` (nil: splat)
     #   guarded:    block_given? or `if blk` / `blk&.call` / `blk.nil?`
-    #   forwarded:  passed on with `&blk` (or `&`), or a bare `super`
+    #   forwarded:  passed on with `&blk` (or `&`), or by `super` (with or without arguments)
     #   stored:     kept for later (`@x = blk`, passed as an argument)
     #   enum:       calls to_enum / enum_for (returns an Enumerator without one)
     #   self_eval:  passed to instance_eval/instance_exec/... (DSL block)
+    #   self_on:    the self type that block runs with (see #self_on)
     def block_usage(defn, name)
       u = { yields: [], guarded: false, forwarded: false, stored: false, enum: false, self_eval: false, named: !name.nil? }
       blk = name&.to_sym
@@ -673,6 +701,9 @@ module GemTypes
           args = n.arguments&.arguments || []
           u[:yields] << (args.any? { |a| a.is_a?(Prism::SplatNode) } ? nil : args.size)
         when Prism::ForwardingSuperNode then u[:forwarded] = true
+        when Prism::SuperNode
+          # `super(a)` passes the method's block on as well.
+          u[:forwarded] = true unless n.block.is_a?(Prism::BlockNode)
         when Prism::CallNode
           if n.receiver.nil? && %i[block_given? iterator?].include?(n.name)
             u[:guarded] = true
@@ -693,12 +724,18 @@ module GemTypes
           if ba.is_a?(Prism::BlockArgumentNode) && (ba.expression.nil? || ba.expression.is_a?(Prism::LocalVariableReadNode) && ba.expression.name == blk)
             if SELF_CHANGING.include?(n.name) || n.name == :new && n.receiver&.slice == "Class"
               u[:self_eval] = true
+              u[:self_on] ||= self_on(n)
             else
               u[:forwarded] = true
             end
           end
           if blk && (n.arguments&.arguments || []).any? { |a| a.is_a?(Prism::LocalVariableReadNode) && a.name == blk }
-            SELF_CHANGING.include?(n.name) ? u[:self_eval] = true : u[:stored] = true
+            if SELF_CHANGING.include?(n.name)
+              u[:self_eval] = true
+              u[:self_on] ||= self_on(n)
+            else
+              u[:stored] = true
+            end
           end
         when Prism::IfNode, Prism::UnlessNode, Prism::AndNode, Prism::OrNode
           cond = n.respond_to?(:predicate) ? n.predicate : n.left
@@ -714,6 +751,25 @@ module GemTypes
         stack.concat(n.compact_child_nodes)
       end
       u
+    end
+
+    # The self a block passed to `call` runs with, as an RBS type for its
+    # `[self: X]`: `self` for instance_eval/class_eval on the receiver,
+    # `instance` for define_method, `Foo` for `Foo.new.instance_eval`,
+    # `singleton(Foo)` for `Foo.instance_eval`, `Class` for `Class.new`,
+    # untyped otherwise.
+    def self_on(call)
+      return "Class" if call.name == :new
+      return "instance" if %i[define_method].include?(call.name) && (call.receiver.nil? || call.receiver.is_a?(Prism::SelfNode))
+
+      r = call.receiver
+      case r
+      when nil, Prism::SelfNode then "self"
+      when Prism::ConstantReadNode, Prism::ConstantPathNode then "singleton(#{r.slice})"
+      when Prism::CallNode
+        r.name == :new && (r.receiver.is_a?(Prism::ConstantReadNode) || r.receiver.is_a?(Prism::ConstantPathNode)) ? r.receiver.slice : "untyped"
+      else "untyped"
+      end
     end
 
     # Types of literal nodes Lumitrace does not record a value for.
