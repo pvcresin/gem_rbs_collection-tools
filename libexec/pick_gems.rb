@@ -15,7 +15,8 @@
 # in ruby/gem_rbs_collection (--no-pr-check to skip that check). Untyped
 # gems are the point: those are the ones the collection should cover. Caches HTTP responses in
 # ~/.cache/pick_gems for a day.
-require "net/http"; require "json"; require "fileutils"; require "time"; require "digest"
+require "net/http"; require "json"
+require "shellwords"; require "fileutils"; require "time"; require "digest"
 repo = ARGV[0] or abort "usage: ruby pick_gems.rb <gem_rbs_collection dir> [--top N] [--limit N]"
 top = (ARGV[ARGV.index("--top") + 1] rescue nil)&.to_i || 500
 limit = (ARGV[ARGV.index("--limit") + 1] rescue nil)&.to_i || 30
@@ -74,8 +75,25 @@ end
 #   sig/). Those are skipped: they already have types.
 # - is there an open pull request for it in ruby/gem_rbs_collection?
 #   (needs the gh CLI; skipped with --no-pr-check)
+# `gem specification --remote` has no file list (it is always empty), so
+# the package is fetched and its data.tar.gz listed (cached per version).
+def package_files(name, version)
+  f = File.join(CACHE, "files-#{name}-#{version}")
+  return File.read(f).lines(chomp: true) if File.exist?(f)
+
+  require "tmpdir"
+  list = Dir.mktmpdir do |dir|
+    next nil unless system("gem", "fetch", name, "-v", version, chdir: dir, out: File::NULL, err: File::NULL)
+
+    pkg = Dir[File.join(dir, "*.gem")].first or next nil
+    IO.popen(["bash", "-c", "tar -xOf #{pkg.shellescape} data.tar.gz | tar -tz"], &:read).lines(chomp: true)
+  end
+  File.write(f, list.join("\n")) if list
+  list || []
+end
+
 def bundled_rbs(name, version)
-  files = `gem specification --remote #{name} -v #{version} files 2>/dev/null`.lines.map { _1.sub(/\A- /, "").strip }
+  files = package_files(name, version)
   rbs = files.grep(/\.rbs\z/)
   rbs.empty? ? nil : (rbs.any? { _1.start_with?("sig/") } ? "sig/" : rbs.first)
 end
