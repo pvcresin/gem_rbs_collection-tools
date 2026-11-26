@@ -138,13 +138,25 @@ if defined?(RBS::Test::Hook)
     # hooked. Install for Foo when such a body ends. Only module receivers:
     # `class << self` inside an instance method has an object there (a
     # BasicObject one whose #hash is a tag in Builder::XmlMarkup).
-    TracePoint.new(:end) do |tp|
+    # A `class << self` inside Foo's own body (thor's class Thor) ends while
+    # Foo is still being defined: rbs/test installs Foo's hooks when Foo's
+    # body ends, so only act when that body is not open.
+    open_bodies = []
+    TracePoint.new(:class, :end) do |tp|
       o = tp.self
+      if tp.event == :class
+        open_bodies.push(o)
+        next
+      end
+      open_bodies.pop
       next unless (o.singleton_class? rescue false)
 
       k = (o.attached_object rescue nil)
       n = mod_name.(k)
-      install.(k) if target.(n) && declared.(n)
+      next unless target.(n) && declared.(n)
+      next if open_bodies.any? { |b| b.equal?(k) }
+
+      install.(k)
     end.enable
     watch = lambda do |klass|
       next if watched[klass]
@@ -168,29 +180,9 @@ if defined?(RBS::Test::Hook)
 
       watch.(klass)
     end
-    # Targets defined after this file loads: a class whose methods come
-    # from `class << Foo` blocks outside its body, or `Foo = Struct.new`
-    # (no class body, so rbs/test's :end hook never runs for it).
-    if Module.private_method_defined?(:const_added) || Module.method_defined?(:const_added)
-      Module.prepend(Module.new do
-        define_method(:const_added) do |sym|
-          super(sym)
-          own = name_of.bind_call(self)
-          full = equal?(Object) ? sym.to_s : (own && "#{own}::#{sym}")
-          next unless target.(full) && declared.(full)
-
-          klass = (const_get(sym, false) rescue nil)
-          next unless mod_name.(klass)
-
-          # Foo = Struct.new(...) arrives with its methods and no class body
-          # for rbs/test's :end hook. `class Foo` arrives empty and gets its
-          # hooks when its body ends: leave it to rbs/test (Thor turns
-          # methods defined mid-body into commands).
-          has_methods = (klass.instance_methods(false).any? || klass.singleton_methods(false).any?) rescue false
-          install.(klass) if has_methods
-        end
-      end)
-    end
+    # (A Module#const_added watcher for Foo = Struct.new classes was tried:
+    # prepending const_added on Module broke thor's spec loading. A
+    # Struct class reopened with `class << Foo` is covered above.)
   end
 end
 
