@@ -360,7 +360,12 @@ lists public methods added, removed or with changed parameters in the
 source since the old version, declared methods that are gone, public
 methods missing from the RBS (with a suggested signature from the
 evidence), Steep mismatches and type errors from the test suite. Copy the
-directory to `gems/<gem>/<new major.minor>` and work through the list.
+directory to `gems/<gem>/<new major.minor>` (without `_src`) and work
+through the list. Keep the old directory: many hold a `_src` git
+submodule registered in the root `.gitmodules`, and a PR that changes any
+file outside `gems/` needs an admin, so `/merge` stops working. Old
+directories may fail today's RuboCop once the gem gets a `.rubocop.yml`:
+`rubocop -a` there (whitespace only) rather than excluding them.
 
 ## 5. Many gems at once
 
