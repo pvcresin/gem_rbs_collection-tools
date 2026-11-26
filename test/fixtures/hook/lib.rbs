@@ -1,0 +1,9 @@
+class Tag < BasicObject
+  def initialize: () -> void
+  def tag!: (Symbol name) ?{ (Tag) -> void } -> String
+  def out: () -> String
+end
+class Disp
+  def run: () { (Integer, ?Integer) -> untyped } -> untyped
+  def lam?: () { (*untyped) -> untyped } -> bool
+end

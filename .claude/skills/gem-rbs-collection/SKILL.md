@@ -276,6 +276,14 @@ itself must validate with its dependencies.
   other key/value types. When the method only reads the Hash, use
   `Hash[untyped, untyped]` or an interface. `verify` flags parameters the
   tests passed a Hash/Array subclass to.
+- rbs/test as patched by `libexec/rbs_hook_fix.rb` checks BasicObject
+  subclasses (Builder::XmlMarkup) and passes blocks with their original
+  arity/parameters/lambda?, so code that dispatches on `block.arity`
+  (thor's Actions#get, jwt's key finder) runs its real path under the
+  checker. Spec blocks that return an expectation instead of the value
+  the API wants then show up as type errors: test scaffolding, not RBS
+  errors. What still differs under the checker: the block object's
+  identity and caller locations (rake's test_namespace, test_create).
 - Duck-typed parameters (the code checks `respond_to?(:write)` or just
   calls read/each_line): declare an interface, not `IO | StringIO`.
   Tempfile is `< File` in RBS, so Steep accepts it, but at runtime it is

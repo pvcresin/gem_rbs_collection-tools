@@ -19,6 +19,39 @@ if defined?(RBS::Test::Hook)
   end
   RBS::Test::Hook.singleton_class.prepend(RBSHookKernelMethod)
 
+  # The generated wrapper method:
+  # - calls block_given? and Object.new without a receiver, which a
+  #   BasicObject subclass sends to method_missing (Builder::XmlMarkup
+  #   turned them into tags and the run hung): use the block parameter and
+  #   ::Object;
+  # - passes the gem a `proc { |*args, &b| ... }` in place of the caller's
+  #   block, so block.arity is -1 and code that dispatches on it (thor's
+  #   Actions#get, jwt's key finder, Thor::Group) takes another path: the
+  #   wrapper answers arity, parameters and lambda? like the original.
+  module GemTypesBlockShape
+    def self.copy(wrapper, original)
+      wrapper.define_singleton_method(:arity) { original.arity }
+      wrapper.define_singleton_method(:parameters) { |*a, **k| original.parameters(*a, **k) }
+      wrapper.define_singleton_method(:lambda?) { original.lambda? }
+      wrapper
+    end
+  end
+
+  module RBSHookSafeSource
+    def hook_method_source(prefix, method_name, key, random:, params:)
+      line, src = super
+      blk = "block__#{random}"
+      without = alias_names(method_name, random).last
+      src = src.sub(/^    if block_given\?$/, "    if #{blk}")
+               .sub("block_given: block_given?,", "block_given: !#{blk}.nil?,")
+               .sub("wrapped_block = Object.new.instance_exec do", "wrapped_block = ::Object.new.instance_exec do")
+               .sub("      result = __send__(:\"#{without}\", *args, &wrapped_block)",
+                    "      ::GemTypesBlockShape.copy(wrapped_block, #{blk})\n      result = __send__(:\"#{without}\", *args, &wrapped_block)")
+      [line, src]
+    end
+  end
+  RBS::Test::Hook.singleton_class.prepend(RBSHookSafeSource)
+
   # RBS_TEST_ONLY_METHODS="String#to_nfc,Kernel.ap": for the classes named
   # there, hook only those methods. Lets a gem's additions to core classes
   # be checked without wrapping every core method of String or Kernel.
