@@ -114,8 +114,8 @@ end
 # The first open PR in ruby/gem_rbs_collection whose title names the gem
 # as a whole word ("rack-test" does not name "rack"). Aborts when gh fails:
 # a failed search must not read as "no PR".
-def open_pr(name)
-  q = "repo:ruby/gem_rbs_collection is:pr is:open in:title #{name}"
+def open_pr(name, state = "is:open")
+  q = "repo:ruby/gem_rbs_collection is:pr #{state} in:title #{name}"
   out = st = err = nil
   2.times do |i|
     out, err, st = Open3.capture3("gh", "api", "-X", "GET", "search/issues", "-f", "q=#{q}", "-f", "per_page=100",
@@ -165,6 +165,15 @@ if $PROGRAM_NAME == __FILE__
     o.on("--[no-]pr-check") { pr_check = _1 }
   end.parse(ARGV)
   repo = args.first or abort "usage: ruby pick_gems.rb <gem_rbs_collection dir> [--top N] [--limit N]"
+  # The checkout decides what is "in the collection": a fork's main that
+  # lags upstream lists gems that were added or improved since.
+  local = `git -C #{repo.shellescape} rev-parse HEAD 2>/dev/null`.strip
+  remote = `git ls-remote https://github.com/ruby/gem_rbs_collection refs/heads/main 2>/dev/null`.split.first
+  if remote && !local.empty? && local != remote &&
+     !system("git", "-C", repo, "merge-base", "--is-ancestor", remote, "HEAD", out: File::NULL, err: File::NULL)
+    warn "WARNING: #{repo} is not at ruby/gem_rbs_collection's main (#{remote[0, 8]}): " \
+         "git -C #{repo} fetch https://github.com/ruby/gem_rbs_collection main && git -C #{repo} merge --ff-only FETCH_HEAD"
+  end
   names = []
   (1..(top / 20.0).ceil).each do |page|
     html = get("https://bestgems.org/total?page=#{page}")
@@ -233,6 +242,12 @@ if $PROGRAM_NAME == __FILE__
     end
     if check_prs && (pr = open_pr(r[:name]))
       warn "skip #{r[:name]}: open PR #{pr}"; next
+    end
+    # A PR closed without merging in the last half year: read why before
+    # trying again (#1195 was closed because the RBS belongs upstream).
+    since = (Time.now - 180 * 86_400).strftime("%Y-%m-%d")
+    if check_prs && (pr = open_pr(r[:name], "is:closed is:unmerged closed:>=#{since}"))
+      warn "skip #{r[:name]}: PR #{pr} was closed without merging; read its comments first"; next
     end
     picked << r
   end
