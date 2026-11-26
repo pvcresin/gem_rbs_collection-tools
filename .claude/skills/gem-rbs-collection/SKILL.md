@@ -408,6 +408,14 @@ directories may fail today's RuboCop once the gem gets a `.rubocop.yml`:
   themselves (say this up front so they are not surprised). That session will
   refuse to merge on a request relayed from another session; merging is
   the user's call (they comment `/merge` or ask that session directly).
+- Messages between sessions arrive HTML-escaped (`->` became `-&gt;`,
+  `<<` became `&lt;&lt;`). Never paste PR text into a message: tell the
+  PR session to take the body from the commit
+  (`git log -1 --format=%B <branch>`), or send the text base64-encoded
+  (UTF-8) for it to decode with `base64 -d`. Afterwards have it check the
+  bodies for `&amp;`, `&lt;`, `&gt;`, `&quot;` and U+FFFD.
+- Branches: `add-<gem>` for a new gem, `update-<gem>` for improving one
+  already in the collection.
 - No PR template. Add a short verification section to the PR body
   (`gem-types verify` prints one):
 
