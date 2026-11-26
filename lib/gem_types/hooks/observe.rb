@@ -279,7 +279,9 @@ ObserveTypes::TP = TracePoint.new(:call, :return, :raise, :rescue, :b_call, :b_r
       unless frame[:blk_val].equal?(ObserveTypes::UNSET)
         bv = frame[:blk_val]
         d[:passthrough][1] += 1
-        d[:passthrough][0] += 1 if ObserveTypes.immediate?(bv) ? bv == rv : bv.equal?(rv)
+        # Identity only: Integer#== hands an unknown right side to its own
+        # == (rake's LinkedList#== then raised inside the hook).
+        d[:passthrough][0] += 1 if bv.equal?(rv) || (ObserveTypes.immediate?(bv) && ObserveTypes.immediate?(rv) && bv.eql?(rv))
       end
     end
     d[:shapes][frame[:shape]] << outcome if d[:shapes].size < 30 || d[:shapes].key?(frame[:shape])
