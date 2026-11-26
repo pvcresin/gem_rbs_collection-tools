@@ -24,7 +24,7 @@ spec.dependencies.each do |d|
   names << d.name
 end
 
-SKIP = /\A(rubocop.*|standard|guard.*|pry.*|byebug|debug|coveralls.*|codeclimate.*|ruby-prof|yard|rdoc|bundler|bake.*|covered|sus-fixtures-.*|rake-compiler|gem-release|overcommit|reek|flay|flog|panolint|mutant.*|simplecov.*|rubysl.*)\z/
+SKIP = /\A(rubocop.*|standard|guard.*|pry.*|byebug|debug|coveralls.*|codeclimate.*|ruby-prof|yard|yard-.*|rdoc|bundler|bake.*|covered|sus-fixtures-.*|rake-compiler|gem-release|overcommit|reek|flay|flog|panolint|mutant.*|simplecov.*|rubysl.*)\z/
 gemfile = %w[Gemfile gems.rb].map { File.join(repo, _1) }.find { File.file?(_1) }
 if gemfile
   extra = []
@@ -35,6 +35,12 @@ if gemfile
     indent = l[/\A\s*/].size
     if skip_until
       skip_until = nil if l.match?(/^\s*end\b/) && indent <= skip_until
+      next
+    end
+    # Groups the tests do not need (docs, release): their gems may not
+    # load without the tools skipped above (yard-sitemap needs its yard).
+    if (gm = l.match(/^\s*group\s*\(?\s*(.+?)\)?\s+do\b/)) && gm[1].scan(/:(\w+)/).flatten.all? { %w[doc docs documentation release benchmark benchmarks].include?(_1) }
+      skip_until = indent
       next
     end
     if (pm = l.match(/^\s*platforms?\s*\(?\s*(.+?)\)?\s+do\b/))

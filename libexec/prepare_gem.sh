@@ -141,6 +141,10 @@ if [ -d "$W/repo" ]; then
   ruby "$here/env_gemfile.rb" "$pkgfile" "$root" > "$W/env/Gemfile"
   echo "env: $W/env/Gemfile (from the package's dependencies and the repo's Gemfile)"
   cmd=$(ruby "$here/detect_test_cmd.rb" "$root" "$W/env/Gemfile")
+  # rake itself loads from repo/lib, not the bundle: run its own executable.
+  if [ "$gem" = rake ] && [ -n "$cmd" ]; then
+    cmd=${cmd//bundle exec rake/bundle exec ruby -Ilib exe/rake}
+  fi
   if [ -n "$cmd" ]; then
     printf '%s\n' "$cmd" > "$W/test_cmd"
     echo "test command (guess, saved to $W/test_cmd; collect uses it unless --test-cmd is given): $cmd"
