@@ -152,13 +152,16 @@ def improvement(gdir, latest)
 end
 
 if $PROGRAM_NAME == __FILE__
-  top = 500; limit = 30; min_months = nil; pr_check = true; improve = false
+  top = 500; limit = 30; min_months = nil; pr_check = true; improve = false; with_reviewers = false
   args = OptionParser.new do |o|
     o.banner = "usage: ruby pick_gems.rb <gem_rbs_collection dir> [--top N] [--limit N] [--min-months N] [--no-pr-check] [--improve]"
     # --improve: gems already in the collection whose signatures are the
     # ones users load (no RBS in the package or the upstream repository),
     # ranked by downloads, with what could be improved.
     o.on("--improve") { improve = true }
+    # Gems with _reviewers.yaml need a reviewer's approval before /merge;
+    # --improve leaves them out unless --with-reviewers is given.
+    o.on("--with-reviewers") { with_reviewers = true }
     o.on("--top N", Integer) { top = _1 }
     o.on("--limit N", Integer) { limit = _1 }
     o.on("--min-months N", Integer) { min_months = _1 }
@@ -195,6 +198,7 @@ if $PROGRAM_NAME == __FILE__
              else 2 end
     if improve
       next unless Dir.exist?(gdir)
+      next if status == 2 && !with_reviewers
     elsif status == 2
       next
     end
