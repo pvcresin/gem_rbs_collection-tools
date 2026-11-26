@@ -10,6 +10,7 @@ export const meta = {
 //   ns:       runtime check targets, e.g. "Daemons,Daemons::*,Daemonize"
 //   workdir:  gem-types workdir after `gem-types run` (repo/, env/, gemhome/, draft.rbs, report.md)
 //   worktree: a gem_rbs_collection worktree on branch add-<gem>
+//   from:     (improving) the newest version directory already in the collection
 // Each item gets an author agent; as soon as it finishes, an independent
 // reviewer (who does not see the author's report) tries to falsify it.
 const T = args.tools
@@ -41,12 +42,26 @@ const REVIEW = {
 const env = x => `BUNDLE_GEMFILE=${x.workdir}/env/Gemfile GEM_HOME=${x.workdir}/gemhome GEM_PATH=${x.workdir}/gemhome`
 const sigdir = x => `${x.worktree}/gems/${x.gem}/${x.ver}`
 
+// Improving a gem already in the collection: x.from is its newest
+// version directory. Same major as x.ver: move it (git mv, as the
+// collection did for listen 3.2 => 3.9); another major: keep it and add
+// x.ver next to it.
+const improveText = x => `IMPROVING AN EXISTING GEM: gems/${x.gem}/${x.from} is already in the collection and users load it; this is not a new gem. ${x.from === x.ver ? '' : (x.from.split('.')[0] === x.ver.split('.')[0] ? `First: cd ${x.worktree} && git mv gems/${x.gem}/${x.from} gems/${x.gem}/${x.ver}.` : `First: copy gems/${x.gem}/${x.from} to gems/${x.gem}/${x.ver} (a new major; keep the old directory unchanged).`)}
+Then $T update --workdir W --sig ${sigdir(x)} --from ${x.from} lists what changed in the source since ${x.from}, declarations that are gone and public methods the RBS misses. Work from the existing RBS, not from the draft:
+- keep every declaration that is correct, and its style; change only what you verified;
+- replace untyped with the real types the source and runs show (that is the main point: ${x.gem}'s RBS is mostly untyped or outdated);
+- add the public methods and classes that are missing, remove those that no longer exist;
+- never narrow a type that real callers may rely on without proof from the source (a narrower type breaks their type checks);
+- keep the existing _test files passing and extend them with "# @type var" assertions for what you typed.
+Report in "left_out" what is still untyped and why.`
+
 const authorPrompt = x => `Write accurate, verified RBS for the Ruby gem "${x.gem}" for ruby/gem_rbs_collection. Wrong types are worse than missing ones: check every declaration against the implementation and confirm it by running code.
 
 Read first: ${T}/.claude/skills/gem-rbs-collection/SKILL.md (sections 3-4 and "Type patterns"), ${T}/docs/evidence.md, ${T}/docs/verification.md.
 
 Setup done: workdir W=${x.workdir} (repo/ = upstream at the release tag, pkg/ = packaged gem, env/Gemfile + gemhome/ = test environment, draft.rbs + report.md = evidence; the draft is evidence, not the answer). Test command: ${x.test_cmd || '(W/test_cmd)'}. Run Ruby as: cd W/repo && ${env(x)} bundle exec ruby -Ilib ...
 ${x.notes ? 'Notes: ' + x.notes : ''}
+${x.from ? improveText(x) : ''}
 Output: only inside ${x.worktree}/gems/${x.gem}/ : ${x.ver}/${x.gem}.rbs, ${x.ver}/_test/test.rb (+ _test/test.rbs if needed), .rubocop.yml (copy gems/netrc/.rubocop.yml), manifest.yaml only for stdlib deps. No _reviewers.yaml. Do not commit, push or touch GitHub. Never execute code from the worktree's gems/ except via bin/test.
 
 Before writing, read the "Pitfalls from the collection's history" checklist in the skill; the mistakes there are what later commits most often had to fix. Run $T lint --workdir W --sig ${sigdir(x)} (seconds, static) as soon as a first version exists and again before reporting: fix every finding or say in doubts why it does not apply.
