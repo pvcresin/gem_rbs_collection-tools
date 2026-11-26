@@ -101,13 +101,51 @@ class RepairTest < Minitest::Test
     assert_equal "class A\n  # keep me\n  def m: (String | Integer x) -> (String | Integer) # trailing\nend\n", out
   end
 
-  def record(file, text, needle, value, outcome: "return", pos: "req", key: "A#m", occurrence: 0)
+  # By default the value comes from two test files (trusted evidence).
+  def record(file, text, needle, value, outcome: "return", pos: "req", key: "A#m", occurrence: 0,
+             caller: "test/a_test.rb", tests: %w[test/a_test.rb test/b_test.rb])
     s = -1
     (occurrence + 1).times { s = text.index(needle, s + 1) }
     { "key" => key, "kind" => pos == "return" ? "ReturnTypeError" : "ArgumentTypeError",
       "slot" => { "pos" => pos, "index" => 0, "block" => false }, "declared" => needle,
       "loc" => { "file" => file, "start" => s, "end" => s + needle.size },
-      "value" => value, "outcome" => outcome, "count" => 2, "frame" => "test/a_test.rb:3" }
+      "value" => value, "outcome" => outcome, "count" => 2, "frame" => "test/a_test.rb:3",
+      "caller" => caller, "tests" => tests }
+  end
+
+  def test_trust_needs_the_gem_or_two_test_files
+    Dir.mktmpdir do |dir|
+      file = File.join(dir, "a.rbs")
+      text = "class A\n  def m: (String x) -> Integer\n  def n: (Symbol s) -> void\n  def o: (Float f) -> void\n  def p: (Time t) -> void\nend\n"
+      File.write(file, text)
+      one = %w[test/a_test.rb]
+      recs = [
+        record(file, text, "Integer", known("Float"), pos: "return", tests: one),               # returned: trusted
+        record(file, text, "String", known("IO"), tests: one, key: "A#m"),                       # one test file: review
+        record(file, text, "Symbol", known("String"), key: "A#n"),                               # two test files
+        record(file, text, "Float", known("Integer"), caller: "#{dir}/lib/a.rb", tests: [], key: "A#o"), # script/gem, no test
+        record(file, text, "Time", known("Date"), caller: "#{dir}/lib/a.rb", tests: one, key: "A#p")    # gem, from one test
+      ]
+      plan = R.plan(recs, files: [file], test_file: ->(p) { p.to_s.match?(R::TEST_PATH) }, repo: dir)
+      assert_equal({ "A#m" => "returned by the gem", "A#n" => "seen from 2 test files", "A#o" => "passed by non-test code" },
+                   plan[:changes].to_h { [_1.key, _1.trust] })
+      assert_equal [["A#m", "String | IO"], ["A#p", "Time | Date"]].sort, plan[:review].map { [_1.key, _1.new] }.sort
+      all = R.plan(recs, files: [file], test_file: ->(p) { p.to_s.match?(R::TEST_PATH) }, repo: dir, include_test_only: true)
+      assert_equal 5, all[:changes].size
+      assert_empty all[:review]
+    end
+  end
+
+  def test_review_lists_the_full_widening_next_to_the_trusted_part
+    Dir.mktmpdir do |dir|
+      file = File.join(dir, "a.rbs")
+      text = "class A\n  def m: (String x) -> void\nend\n"
+      File.write(file, text)
+      recs = [record(file, text, "String", known("Symbol")), record(file, text, "String", known("IO"), tests: %w[test/a_test.rb])]
+      plan = R.plan(recs, files: [file], test_file: ->(p) { p.to_s.match?(R::TEST_PATH) }, repo: dir)
+      assert_equal ["String | Symbol"], plan[:changes].map(&:new)
+      assert_equal ["String | Symbol | IO"], plan[:review].map(&:new)
+    end
   end
 
   def test_plan_and_apply_widen_only_normal_calls
@@ -218,12 +256,14 @@ class RepairRunTest < Minitest::Test
       FileUtils.cp_r(Dir[File.join(FIX, "*")], dir)
       out = File.join(dir, "evidence")
       cfg = GemTypes::Config.new(repo: dir, lib_dirs: ["."], test_dirs: ["test"], ns: ["Shelf"], requires: ["lib"],
-                                 test_cmd: "ruby test/shelf_test.rb", env: {}, out: out)
+                                 test_cmd: %(ruby -e 'require "./test/shelf_test"; require "./test/more_test"'),
+                                 env: {}, out: out)
       sig = File.join(dir, "sig")
       report = GemTypes::Repair.run(cfg, sig, [cfg.test_cmd], io: StringIO.new)
       rbs = File.read(File.join(sig, "shelf.rbs"))
       assert_includes rbs, "  # Items are strings (deliberately too narrow for the test below).\n"
-      assert_includes rbs, "def add: (String | Symbol item) -> self"
+      assert_includes rbs, "def add: (String | Symbol item) -> self", "Symbol comes from two test files"
+      assert_equal ["String | Symbol | Integer"], report[:review].map(&:new), "Integer only from one test file"
       assert_includes rbs, "def first: () -> (String | Symbol)"
       assert_includes rbs, "def check: (String x) -> String", "a call that raised must not widen"
       assert_includes rbs, "| (Integer) -> Integer\n", "overloads are reported, not changed"
@@ -240,6 +280,8 @@ class RepairRunTest < Minitest::Test
       assert_equal "::String", add["declared"]
       assert_equal "return", add["outcome"]
       assert_match(%r{test/shelf_test\.rb:4}, add["frame"])
+      assert_equal File.join(dir, "test", "shelf_test.rb"), File.realpath(add["caller"])
+      assert_equal [File.join(dir, "test", "shelf_test.rb")], add["tests"].map { File.realpath(_1, dir) }
     end
   end
 end

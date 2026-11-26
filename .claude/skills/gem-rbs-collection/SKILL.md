@@ -356,10 +356,13 @@ passed or returned into each rejecting slot (text spliced in place, rerun
 until nothing changes). It skips calls that raised (negative tests), test
 doubles, anonymous and test-defined classes, plain `Object`, returns from
 test-defined receivers and classes without RBS; overload and arity errors
-are only reported. Review every change it prints (also in
-`W/evidence/repair.json`): a test passing an odd value it happens to
-tolerate (`t.execute(0)`) widens too, so drop what the source does not
-support.
+are only reported. It widens on its own only with evidence beyond one
+test: a value the gem returns or yields, a value non-test code passes
+(the gem itself or a script) outside a single test file, or one seen
+from two test files. A value only one test file passes (`t.execute(0)`,
+`FileList["a", nil]`) is listed under "test-only, review before
+applying"; `--include-test-only` applies those too. Review every change
+it prints (also in `W/evidence/repair.json`) against the source.
 
 Trust `verify`'s exit status: 0 only when exists, Steep and a complete
 checked test run all pass. If it prints `CHECKED RUN INCOMPLETE`, fix the

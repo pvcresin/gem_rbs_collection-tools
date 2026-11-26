@@ -26,8 +26,10 @@
 #   gem-types update    --workdir W --sig path/to/foo.rbs [--from OLD_VERSION] [--library json,uri]
 #                       (existing RBS vs a new version: source changes, gone/missing methods, steep, tests)
 #   gem-types repair    --workdir W --sig <rbs file or dir> [--test-cmd CMD]... [--rounds N] [--dry-run]
+#                       [--include-test-only]
 #                       (runs the suite, or each --test-cmd, with runtime type checks and widens every slot
-#                       that rejected a value from a call that returned normally; report in W/evidence/repair.json)
+#                       that rejected a value from a call that returned normally; values only one test file
+#                       passes are listed for review unless --include-test-only; report in W/evidence/repair.json)
 #   gem-types check     [rbs_check.sh options] -- <command>
 #   gem-types coverage  <file.rbs> <calls file>
 #
@@ -342,6 +344,7 @@ when "repair"
   cmds = []
   rounds = 3
   dry_run = false
+  include_test_only = false
   args = []
   argv = ARGV.each
   loop do
@@ -350,6 +353,7 @@ when "repair"
     when /\A--test-cmd=(.*)\z/m then cmds << $1
     when "--rounds" then rounds = Integer(argv.next)
     when "--dry-run" then dry_run = true
+    when "--include-test-only" then include_test_only = true
     else args << a
     end
   end
@@ -358,7 +362,8 @@ when "repair"
   sig = File.expand_path(opts[:sig] || abort("--sig is required"))
   cmds = [cfg.test_cmd || abort("no test command (pass --test-cmd)")] if cmds.empty?
   begin
-    report = GemTypes::Repair.run(cfg, sig, cmds, rounds: rounds, dry_run: dry_run)
+    report = GemTypes::Repair.run(cfg, sig, cmds, rounds: rounds, dry_run: dry_run,
+                                                      include_test_only: include_test_only)
   rescue GemTypes::Verify::SigError => e
     exit GemTypes::Verify.sig_error(e)
   end

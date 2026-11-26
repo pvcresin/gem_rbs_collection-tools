@@ -2,6 +2,7 @@ require_relative "../lib"
 class Helper; end
 s = Shelf.new
 s.add(:sym)
+s.add(1)
 s.first
 s.add(Helper.new)
 s.add(Class.new.new)
