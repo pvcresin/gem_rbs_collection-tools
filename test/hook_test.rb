@@ -33,4 +33,21 @@ class HookTest < Minitest::Test
     out, = check(File.read(File.join(FIX, "lib.rbs")).sub("?{ (Tag) -> void } -> String", "?{ (Tag) -> void } -> Integer"))
     assert_match(/\[Tag#tag!\] ReturnTypeError/, out)
   end
+
+  # Methods added outside the class body (`class << Foo`), Struct.new
+  # classes and private singleton methods are hooked too.
+  def test_methods_rbs_test_alone_misses
+    fix = File.join(ROOT, "test", "fixtures", "hook2")
+    Dir.mktmpdir do |dir|
+      FileUtils.cp(Dir[File.join(fix, "*.rb")], dir)
+      FileUtils.mkdir_p(File.join(dir, "sig"))
+      FileUtils.cp(File.join(fix, "lib.rbs"), File.join(dir, "sig"))
+      Open3.capture2e(File.join(ROOT, "exe", "gem-types"), "check", "-s", File.join(dir, "sig"), "-t", "Reg::Types,Cache",
+                      "-o", File.join(dir, "out"), "--", "ruby", "run.rb", chdir: dir)
+      errors = File.read(File.join(dir, "out.errors.tsv"))
+      %w[Reg::Types.pub Reg::Types.lazy? Cache.load Cache#version Reg::Types.secret].each do |key|
+        assert_includes errors, "[#{key}]"
+      end
+    end
+  end
 end

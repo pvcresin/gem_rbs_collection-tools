@@ -111,37 +111,82 @@ if defined?(RBS::Test::Hook)
     sample_size = get_sample_size(ENV["RBS_TEST_SAMPLE_SIZE"] || "") rescue nil
     unchecked = (ENV["RBS_TEST_UNCHECKED_CLASSES"] || "").split(",").map(&:strip)
     unchecked.push(*to_double_class(ENV["RBS_TEST_DOUBLE_SUITE"])) rescue nil
-    targets = (ENV["RBS_TEST_TARGET"] || "").split(",").map(&:strip).reject { |t| t.end_with?("*") || t.empty? }
-    targets.each do |name|
-      klass = (Object.const_get(name) rescue nil)
-      next unless klass.is_a?(Module)
-      next unless tester.env.module_name?(RBS::TypeName.parse("::#{name}"))
+    all = (ENV["RBS_TEST_TARGET"] || "").split(",").map(&:strip).reject(&:empty?)
+    exact = all.reject { |t| t.end_with?("*") }
+    prefixes = all.select { |t| t.end_with?("::*") }.map { |t| t.delete_suffix("*") }
+    name_of = Module.instance_method(:name)
+    watched = {}
+    install = lambda do |klass|
+      next if Thread.current[:gem_types_installing]
 
+      begin
+        Thread.current[:gem_types_installing] = true
+        tester.install!(klass, sample_size: sample_size, unchecked_classes: unchecked)
+      rescue StandardError
+        nil
+      ensure
+        Thread.current[:gem_types_installing] = false
+      end
+    end
+    declared = ->(n) { tester.env.module_name?(RBS::TypeName.parse("::#{n}")) rescue false }
+    # Hooks wait until the class body that adds a method has ended, as
+    # rbs/test's own :end hook does: `module_function :x` after `def x`
+    # copies whatever x is then, and a hook installed mid-body made the
+    # copy call a missing alias (terminal-table's Util.ansi_escape).
+    open_bodies = []
+    inside = ->(klass) { open_bodies.any? { |o| o.equal?(klass) || o.equal?(klass.singleton_class) } }
+    TracePoint.new(:class, :end) do |tp|
+      if tp.event == :class
+        open_bodies.push(tp.self)
+      else
+        o = open_bodies.pop
+        k = o.respond_to?(:singleton_class?) && o.singleton_class? ? (o.attached_object rescue nil) : o
+        install.(k) if k && watched[k] && !inside.(k)
+      end
+    end.enable
+    watch = lambda do |klass|
+      next if watched[klass]
+
+      watched[klass] = true
       watcher = Module.new do
         define_method(:method_added) do |m|
           super(m)
-          next unless equal?(klass) && !Thread.current[:gem_types_installing]
-
-          begin
-            Thread.current[:gem_types_installing] = true
-            tester.install!(klass, sample_size: sample_size, unchecked_classes: unchecked)
-          ensure
-            Thread.current[:gem_types_installing] = false
-          end
+          install.(klass) if equal?(klass) && !inside.(klass)
         end
         define_method(:singleton_method_added) do |m|
           super(m)
-          next unless equal?(klass) && !Thread.current[:gem_types_installing]
-
-          begin
-            Thread.current[:gem_types_installing] = true
-            tester.install!(klass, sample_size: sample_size, unchecked_classes: unchecked)
-          ensure
-            Thread.current[:gem_types_installing] = false
-          end
+          install.(klass) if equal?(klass) && !inside.(klass)
         end
       end
       klass.singleton_class.prepend(watcher)
+    end
+    target = ->(n) { n && (exact.include?(n) || prefixes.any? { |pre| n.start_with?(pre) }) }
+    exact.each do |name|
+      klass = (Object.const_get(name) rescue nil)
+      next unless klass.is_a?(Module) && declared.(name)
+
+      watch.(klass)
+    end
+    # Targets defined after this file loads: a class whose methods come
+    # from `class << Foo` blocks outside its body, or `Foo = Struct.new`
+    # (no class body, so rbs/test's :end hook never runs for it).
+    if Module.private_method_defined?(:const_added) || Module.method_defined?(:const_added)
+      Module.prepend(Module.new do
+        define_method(:const_added) do |sym|
+          super(sym)
+          own = name_of.bind_call(self)
+          full = equal?(Object) ? sym.to_s : (own && "#{own}::#{sym}")
+          next unless target.(full) && declared.(full)
+
+          klass = (const_get(sym, false) rescue nil)
+          next unless klass.is_a?(Module)
+
+          watch.(klass)
+          # Foo = Struct.new(...) is complete now; `class Foo` still has its
+          # body to run (installed when it ends).
+          install.(klass) unless inside.(klass)
+        end
+      end)
     end
   end
 end
@@ -191,4 +236,37 @@ if defined?(RBS::Test::Tester::MethodCallTester)
     end
   end
   RBS::Test::Tester::MethodCallTester.prepend(GemTypesCheckSample)
+end
+
+# rbs/test hooks only public singleton methods (klass.methods(false)), so a
+# declared private singleton method (`private_class_method`, `private` in
+# `class << self`) was never checked. Hook those as well.
+if defined?(RBS::Test::Tester)
+  module GemTypesPrivateSingletons
+    def install!(klass, sample_size:, unchecked_classes:)
+      super
+      tester, set = singleton_testers[klass]
+      return unless tester
+
+      privates = klass.singleton_class.private_instance_methods(false)
+      return if privates.empty?
+
+      type_name = factory.type_name(klass.name).absolute!
+      definition = builder.build_singleton(type_name)
+      key = nil
+      definition.methods.each do |name, method|
+        next if set.include?(name) || !privates.include?(name) || skip_method?(type_name, method)
+
+        unless key
+          key = new_key(type_name, "SingletonChecker")
+          RBS::Test::Observer.register(key, tester)
+        end
+        RBS::Test::Hook.hook_singleton_method(klass, name, key: key)
+        set << name
+      end
+    rescue StandardError => e
+      RBS.logger.info { "private singleton hooks for #{klass}: #{e.message}" }
+    end
+  end
+  RBS::Test::Tester.prepend(GemTypesPrivateSingletons)
 end
