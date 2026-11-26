@@ -61,7 +61,7 @@ exe/gem-types coverage <file.rbs> <calls file>
 | Source | Kind | Tool |
 |---|---|---|
 | `tracepoint` | runtime (test suite) | our TracePoint hook: types per call shape, and which shapes raised |
-| `rbs_trace` | runtime (test suite) | [rbs-trace](https://github.com/sinsoku/rbs-trace) |
+| `rbs_trace` | runtime (test suite; by default only when tracepoint recorded nothing) | [rbs-trace](https://github.com/sinsoku/rbs-trace) |
 | `lumitrace` | runtime (test suite) | [Lumitrace](https://github.com/ko1/lumitrace), mapped to parameters and return expressions with Prism |
 | `typeprof` | static (lib + tests) | [TypeProf](https://github.com/ruby/typeprof) |
 | `tyda` | static (lib + tests) | [tyda](https://rubygems.org/gems/tyda) |

@@ -9,6 +9,8 @@
 #   gem-types run       <gem> [gem...] [--base DIR] [--jobs N] [--worktrees <gem_rbs_collection> [--ref REF]]
 #                       (prepare..draft for each gem in parallel; worktrees on add-<gem>; workflow args)
 #   gem-types collect   --workdir W --ns Foo --test-cmd "..." [--sources a,b] [--jobs N] [--require foo] [--lib lib] [--tests test,spec]
+#                       (test runs two at a time, --jobs 1 for one; rbs_trace only when tracepoint fails
+#                       unless named in --sources; unchanged static sources are reused; GEM_TYPES_FRESH=1)
 #   gem-types draft     --workdir W [--existing path/to/foo.rbs]
 #   gem-types exists    --workdir W --sig path/to/foo.rbs
 #   gem-types steep     --workdir W --sig dir_or_file [--library json,uri]
@@ -132,22 +134,7 @@ when "collect"
   unknown = (opts[:sources] || []) - GemTypes::Sources::ALL
   abort "unknown source(s): #{unknown.join(', ')} (known: #{GemTypes::Sources::ALL.join(', ')})" unless unknown.empty?
   cfg = load_config(opts[:workdir], opts)
-  selected = opts[:sources] || GemTypes::Sources::ALL
-  run_one = lambda do |src|
-    t = Time.now
-    ok = GemTypes::Sources.for(src, cfg).run
-    warn format("  %-10s %-6s %5.1fs", src, ok == false || ok.nil? ? "failed" : "ok", Time.now - t)
-  end
-  # Static sources do not touch the test environment: run them in parallel
-  # with the test runs. Test runs share the repo (files, ports), so they run
-  # one at a time unless --jobs says otherwise.
-  static = selected & GemTypes::Sources::STATIC
-  runtime = selected & GemTypes::Sources::RUNTIME
-  threads = static.map { |src| Thread.new { run_one.(src) } }
-  runtime.each_slice([opts[:jobs] || 1, 1].max) do |batch|
-    batch.map { |src| Thread.new { run_one.(src) } }.each(&:join)
-  end
-  threads.each(&:join)
+  GemTypes::Collect.new(cfg, sources: opts[:sources], jobs: opts[:jobs]).run
 when "draft"
   opts = parse(ARGV)
   cfg = load_config(opts[:workdir], opts)
@@ -206,6 +193,7 @@ when "verify"
   p_, c = r[:plain], r[:checked]
   incomplete = r[:incomplete]
   puts "plain:   #{p_[:total]} #{p_[:unit]}, #{p_[:failed]} failing#{p_[:outside].to_i.positive? ? " (#{p_[:outside]} errors outside of examples)" : ''}"
+  puts "  (plain run reused from #{r[:plain_reused]}: same test command, environment, code and tests; GEM_TYPES_FRESH=1 reruns it)" if r[:plain_reused]
   puts "checked: #{c[:total]} #{c[:unit]}, #{c[:failed]} failing, #{r[:checks]} type checks, #{r[:errors].size} distinct type errors" \
        "#{c[:outside].to_i.positive? ? " (#{c[:outside]} errors outside of examples)" : ''}"
   unless incomplete.empty?

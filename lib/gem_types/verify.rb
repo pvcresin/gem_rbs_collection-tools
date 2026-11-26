@@ -436,7 +436,17 @@ module GemTypes
       FileUtils.mkdir_p(config.out)
       src = Sources::Base.new(config)
       plain_log = File.join(config.out, "suite-plain.log")
-      plain_ok = src.sh(config.env, GemTypes.timed(config.test_cmd), chdir: config.repo, log: plain_log)
+      # The plain run does not depend on the signatures: reuse the last one
+      # (from `run` or an earlier verify) while its inputs are unchanged.
+      cache = PlainRun.new(config)
+      if (hit = cache.fetch)
+        File.write(plain_log, hit[:log]) unless File.expand_path(hit[:path]) == File.expand_path(plain_log)
+        plain_ok = hit[:ok]
+        reused = "#{hit[:at]} (#{hit[:path]})"
+      else
+        plain_ok = src.sh(config.env, GemTypes.timed(config.test_cmd), chdir: config.repo, log: plain_log)
+        cache.store(plain_log, plain_ok)
+      end
       check = File.join(LIBEXEC, "rbs_check.sh")
       checked_log = File.join(config.out, "suite-checked.log")
       calls = "#{prefix}.calls"
@@ -465,7 +475,7 @@ module GemTypes
       { plain: plain, checked: checked, checks: checks, errors: errors,
         uncalled: unc&.reject { |k| k.end_with?(" (private)") },
         uncalled_private: unc&.select { |k| k.end_with?(" (private)") }&.map { |k| k.delete_suffix(" (private)") },
-        plain_ok: plain_ok, checked_ok: checked_ok, incomplete: incomplete,
+        plain_ok: plain_ok, checked_ok: checked_ok, incomplete: incomplete, plain_reused: reused,
         errors_file: "#{prefix}.errors.tsv", logs: [plain_log, checked_log] }
     end
 
