@@ -343,6 +343,7 @@ module GemTypes
       @hidden = {}
       @internal_ns = {}
       @privatized = []
+      @delegates = {}
       dirs.flat_map { |d| Dir[File.join(d, "**/*.rb")] }.select { |f| File.file?(f) }.each do |file|
         result = Prism.parse_file(file)
         # Comments on lines of their own form the doc block above a
@@ -360,6 +361,34 @@ module GemTypes
     end
 
     def each(&) = @defs.each(&)
+
+    # Methods that keep their block for later instead of calling it before
+    # they return: stored (`@x = blk`, `list << blk`) and not yielded, or
+    # forwarded only to such methods (by name, any class). The runtime
+    # check passes these the caller's block unwrapped
+    # (RBS_TEST_RAW_BLOCKS, libexec/rbs_hook_fix.rb).
+    def raw_block_keys
+      keeps = ->(d) { b = d[:block]; b[:stored] && b[:yields].empty? && !b[:self_eval] }
+      raw = @defs.select(&keeps)
+      name_of = ->(k) { k[/[#.]([^#.]+)\z/, 1] }
+      dels = []
+      loop do
+        names = (raw.map { name_of.(_1[:key]) } + dels.map(&name_of)).uniq
+        # Foo.new(&blk) hands the block to Foo#initialize.
+        names << "new" if names.include?("initialize")
+        more = @defs.select do |d|
+          b = d[:block]
+          !raw.include?(d) && b[:forwarded] && !b[:super] && b[:yields].empty? && !b[:self_eval] &&
+            (to = b[:forward_to]) && !to.empty? && (to - names).empty?
+        end
+        more_dels = @delegates.select { |k, t| !dels.include?(k) && names.include?(t) }.keys
+        break if more.empty? && more_dels.empty?
+
+        raw.concat(more)
+        dels.concat(more_dels)
+      end
+      (raw.map { _1[:key] } + dels).uniq
+    end
 
     private
 
@@ -480,6 +509,16 @@ module GemTypes
             end
           end
           return []
+        elsif %i[delegate def_delegators def_delegator def_instance_delegators def_instance_delegator].include?(st.name) && !ns.empty?
+          # `delegate :a, :b, to: :@x` / `def_delegators :@x, :a, :b` /
+          # `def_delegator :@x, :a, :b`: { "Ns#b" => "a" } (raw_block_keys).
+          syms = args.select { |a| a.is_a?(Prism::SymbolNode) }.map(&:unescaped)
+          pairs = case st.name
+                  when :delegate then syms.map { [_1, _1] }
+                  when :def_delegators, :def_instance_delegators then syms.drop(1).map { [_1, _1] }
+                  else syms.size >= 2 ? [[syms[2] || syms[1], syms[1]]] : []
+                  end
+          pairs.each { |name, target| @delegates["#{ns.join('::')}#{singleton ? '.' : '#'}#{name}"] = target }
         elsif ATTRS.key?(st.name)
           names = []
           args.each do |a|

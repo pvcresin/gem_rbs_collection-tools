@@ -13,6 +13,19 @@ module GemTypes
   module Verify
     module_function
 
+    # config.env plus RBS_TEST_RAW_BLOCKS: the gem's methods that keep
+    # their block for later get the caller's block unwrapped in checked
+    # runs (DefIndex#raw_block_keys).
+    def check_env(config, env = config.env)
+      @raw_blocks ||= {}
+      raw = (@raw_blocks[config.lib_paths] ||= begin
+        DefIndex.new(config.lib_paths).raw_block_keys
+      rescue StandardError
+        []
+      end)
+      raw.empty? ? env : env.merge("RBS_TEST_RAW_BLOCKS" => raw.join(","))
+    end
+
     # Signature files that do not parse (or cannot be read). Raised before
     # any check, so broken RBS is never reported as passing.
     class SigError < StandardError; end
@@ -455,7 +468,7 @@ module GemTypes
       # must not pick up an earlier run's numbers.
       FileUtils.rm_f(["#{prefix}.checked.tsv", "#{prefix}.errors.tsv"])
       deps = dep_sig_args(config, sig)
-      checked_ok = src.sh(config.env, "#{check.shellescape} -s #{sigdir.shellescape}#{deps} -t #{targets.shellescape} -d #{double} " \
+      checked_ok = src.sh(check_env(config), "#{check.shellescape} -s #{sigdir.shellescape}#{deps} -t #{targets.shellescape} -d #{double} " \
                                       "-o #{prefix.shellescape} -c #{calls.shellescape} -- #{GemTypes.timed(config.test_cmd)}",
                           chdir: config.repo, log: checked_log)
       plain = test_counts(File.read(plain_log, encoding: "UTF-8"))
@@ -543,7 +556,8 @@ module GemTypes
       check = File.join(LIBEXEC, "rbs_check.sh")
       double = cmd.include?("rspec") ? "rspec" : "minitest"
       only = rbs.methods.keys.select { |k| reopened.include?(GemTypes.split_key(k).first) }
-      env = only.empty? ? config.env : config.env.merge("RBS_TEST_ONLY_METHODS" => only.join(","))
+      env = check_env(config)
+      env = env.merge("RBS_TEST_ONLY_METHODS" => only.join(",")) unless only.empty?
       ok = src.sh(env, "#{check.shellescape} -s #{File.join(dir, 'sig').shellescape}#{dep_sig_args(config, sig)} -t #{targets.shellescape} " \
                        "-d #{double} -o #{prefix.shellescape} -- #{GemTypes.timed(cmd)}",
                   chdir: config.repo, log: File.join(dir, "run.log"))

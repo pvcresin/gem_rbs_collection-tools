@@ -56,13 +56,24 @@ if defined?(RBS::Test::Hook)
                     "block_result = if ::BasicObject.instance_method(:equal?).bind_call(self, new_object)")
                .sub("self.instance_exec(*block_args, &#{blk})",
                     "::BasicObject.instance_method(:instance_exec).bind_call(self, *block_args, &#{blk})")
+      # RBS_TEST_RAW_BLOCKS="Foo#on,Foo.register": methods that keep the
+      # block for later (`@callbacks << blk`). The wrapper proc only records
+      # calls made before the method returns, so wrapping such a block
+      # checks nothing and breaks code and tests that compare it with the
+      # caller's block (factory_bot's definition blocks, `expect(x.block)
+      # .to eq(blk)`): pass the caller's block itself.
+      if GemTypesRawBlocks.raw?("#{prefix}#{method_name}")
+        src = src.sub("      result = __send__(:\"#{without}\", *args, &wrapped_block)",
+                      "      result = __send__(:\"#{without}\", *args, &#{blk})")
+      end
       # initialize: keep the object on a construction stack while it runs,
       # so a method it calls on itself before setting its state (mime-types
       # reads #simplified inside MIME::Type#initialize) is not reported
       # like a user-visible type error.
       if method_name == :initialize
-        src = src.sub("      result = __send__(:\"#{without}\", *args, &wrapped_block)",
-                      "      result = ::GemTypesInit.during(self) { __send__(:\"#{without}\", *args, &wrapped_block) }")
+        src = src.sub(/^      result = __send__\(:"#{Regexp.escape(without.to_s)}", \*args, &(\w+)\)$/) do
+          "      result = ::GemTypesInit.during(self) { __send__(:\"#{without}\", *args, &#{$1}) }"
+        end
                  .sub("      result = __send__(:\"#{without}\", *args)",
                       "      result = ::GemTypesInit.during(self) { __send__(:\"#{without}\", *args) }")
       end
@@ -70,6 +81,11 @@ if defined?(RBS::Test::Hook)
     end
   end
   RBS::Test::Hook.singleton_class.prepend(RBSHookSafeSource)
+
+  module GemTypesRawBlocks
+    LIST = (ENV["RBS_TEST_RAW_BLOCKS"] || "").split(",").map(&:strip).reject(&:empty?).to_h { [_1, true] }.freeze
+    def self.raw?(name) = LIST.key?(name)
+  end
 
   module GemTypesInit
     def self.stack = (Thread.current[:gem_types_init] ||= [])

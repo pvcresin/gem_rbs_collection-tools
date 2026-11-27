@@ -11,12 +11,12 @@ class HookTest < Minitest::Test
   ROOT = File.expand_path("..", __dir__)
   FIX = File.join(ROOT, "test", "fixtures", "hook")
 
-  def check(rbs)
+  def check(rbs, env = {})
     Dir.mktmpdir do |dir|
       FileUtils.cp(Dir[File.join(FIX, "*.rb")], dir)
       FileUtils.mkdir_p(File.join(dir, "sig"))
       File.write(File.join(dir, "sig", "lib.rbs"), rbs)
-      Open3.capture2e(File.join(ROOT, "exe", "gem-types"), "check", "-s", File.join(dir, "sig"), "-t", "Tag,Disp",
+      Open3.capture2e(env, File.join(ROOT, "exe", "gem-types"), "check", "-s", File.join(dir, "sig"), "-t", "Tag,Disp",
                       "--", "ruby", "run.rb", chdir: dir)
     end
   end
@@ -27,6 +27,17 @@ class HookTest < Minitest::Test
     assert_includes out, %("<a><b>")
     assert_includes out, "[1, 2]\n1\n", "a two-parameter block must be seen with arity 2"
     assert_includes out, "true", "a lambda block must stay a lambda"
+  end
+
+  # RBS_TEST_RAW_BLOCKS: a method that keeps its block gets the caller's
+  # block itself, so identity comparisons hold.
+  def test_raw_blocks_keep_identity
+    out, st = check(File.read(File.join(FIX, "lib.rbs")))
+    assert st.success?, out
+    assert_includes out, "kept_same=false"
+    out, st = check(File.read(File.join(FIX, "lib.rbs")), "RBS_TEST_RAW_BLOCKS" => "Disp#keep")
+    assert st.success?, out
+    assert_includes out, "kept_same=true"
   end
 
   def test_basic_object_types_are_checked

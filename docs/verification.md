@@ -117,6 +117,15 @@ wrapping every core method (which made awesome_print's run hang). In the first f
 it found Struct accessors (not hooked), Enumerable methods inherited by a
 Hash subclass, and a method that ends in `exec`.
 
+rbs/test passes the gem a wrapper proc in place of the caller's block. A
+method that keeps the block for later (`@callbacks << blk`) gains nothing
+from that, since the wrapper only records calls made before the method
+returns, and code or tests that compare the stored block with the caller's
+fail (16 factory_bot examples). verify, live and repair pass those methods
+the caller's block itself (`RBS_TEST_RAW_BLOCKS`, computed from the
+source: stored and not yielded, or forwarded, delegated or handed to
+`new` for such a method).
+
 rbs/test installs its hooks when a class body ends, so methods a gem adds
 to an existing class without reopening it (a top-level `def IPAddress`,
 `String.class_eval`, `define_method`) were never checked. `rbs_check.sh`

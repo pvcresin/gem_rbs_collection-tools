@@ -163,6 +163,29 @@ class GemTypesTest < Minitest::Test
     end
   end
 
+  def test_raw_block_keys
+    Dir.mktmpdir do |dir|
+      File.write(File.join(dir, "a.rb"), <<~RUBY)
+        class R
+          def on(&blk) = (@cbs ||= []) << blk
+          def before(&blk) = on(&blk)
+          def each(&blk) = @cbs.each(&blk)
+          def run(&blk) = blk.call(1)
+          def both(&blk) = (@b = blk; yield)
+        end
+        class T
+          def initialize(&blk) = (@blk = blk)
+        end
+        class P
+          delegate :on, :run, to: :@r
+          def trait(&blk) = T.new(&blk)
+        end
+      RUBY
+      keys = GemTypes::DefIndex.new([dir]).raw_block_keys
+      assert_equal %w[P#on P#trait R#before R#on T#initialize], keys.sort
+    end
+  end
+
   def test_def_index_options_hash_and_legacy_constants
     Dir.mktmpdir do |dir|
       File.write(File.join(dir, "a.rb"), <<~RUBY)

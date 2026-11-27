@@ -6,4 +6,6 @@ end
 class Disp
   def run: () { (Integer, ?Integer) -> untyped } -> untyped
   def lam?: () { (*untyped) -> untyped } -> bool
+  def keep: () { () -> untyped } -> Proc
+  def kept: () -> Proc?
 end

@@ -7,4 +7,6 @@ end
 class Disp
   def run(&blk) = blk.arity == 2 ? blk.call(1, 2) : blk.call(1)
   def lam?(&blk) = blk.lambda?
+  def keep(&blk) = (@kept = blk)
+  def kept = @kept
 end

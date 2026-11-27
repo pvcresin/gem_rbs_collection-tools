@@ -502,7 +502,8 @@ module GemTypes
       reopened = rbs.classes.keys.reject { |c| config.in_ns?("#{c}#x") }
       targets = (config.ns.flat_map { |n| [n, "#{n}::*"] } + reopened).join(",")
       only = rbs.methods.keys.select { |k| reopened.include?(GemTypes.split_key(k).first) }
-      env = only.empty? ? config.env : config.env.merge("RBS_TEST_ONLY_METHODS" => only.join(","))
+      env = Verify.check_env(config)
+      env = env.merge("RBS_TEST_ONLY_METHODS" => only.join(",")) unless only.empty?
       double = cmd.include?("rspec") ? "rspec" : "minitest"
       FileUtils.rm_f(["#{prefix}.errors.jsonl", "#{prefix}.errors.tsv", "#{prefix}.checked.tsv"])
       check = File.join(LIBEXEC, "rbs_check.sh")
