@@ -130,9 +130,24 @@ when "run"
   batch = GemTypes::Batch.new(ARGV.dup, base: base, jobs: jobs, worktrees: worktrees, ref: ref)
   results = batch.run
   table = batch.summary(results)
-  File.write(File.join(File.expand_path(base), "run-summary.md"), table + "\n")
+  # A later run into the same base (a gem added to the batch) adds to the
+  # summary and the workflow args instead of replacing them.
+  summary_file = File.join(File.expand_path(base), "run-summary.md")
+  if File.exist?(summary_file)
+    rows = table.lines.drop(2)
+    names = rows.map { _1[/\A\| (\S+) /, 1] }
+    old = File.readlines(summary_file).drop(2).reject { |l| names.include?(l[/\A\| (\S+) /, 1]) }
+    table = (table.lines.first(2) + old + rows).join.chomp
+  end
+  File.write(summary_file, table + "\n")
   args_file = File.join(File.expand_path(base), "workflow-args.json")
-  File.write(args_file, JSON.pretty_generate(batch.workflow_args(results)))
+  args = batch.workflow_args(results)
+  if File.exist?(args_file)
+    prev = (JSON.parse(File.read(args_file))["items"] rescue []) || []
+    gems = args[:items].map { _1[:gem] }
+    args[:items] = prev.reject { gems.include?(_1["gem"]) } + args[:items]
+  end
+  File.write(args_file, JSON.pretty_generate(args))
   puts table
   puts "", "Arguments for the gem-rbs-author workflow: #{args_file}"
   exit(results.all? { _1.status == "ok" } ? 0 : 1)
