@@ -297,7 +297,16 @@ module GemTypes
       # (the repository's convention), a new one added on add-<gem>.
       branch = "#{from_version(gem) ? 'update' : 'add'}-#{gem}"
       exists = system("git", "-C", @worktrees, "rev-parse", "--verify", "-q", branch, out: File::NULL, err: File::NULL)
-      args = exists ? [dir, branch] : ["-b", branch, dir, @ref]
+      # An existing branch is reused only while it builds on @ref. One left
+      # from an earlier PR (squash-merged upstream, so not an ancestor of
+      # @ref) is restarted from @ref: update-builder once carried the merged
+      # #1204 commit into the next PR.
+      if exists && !system("git", "-C", @worktrees, "merge-base", "--is-ancestor", @ref, branch, out: File::NULL, err: File::NULL)
+        old = IO.popen(["git", "-C", @worktrees, "rev-parse", "--short", branch], &:read).strip
+        warn "#{gem}: branch #{branch} (#{old}) does not build on #{@ref}; restarting it from #{@ref}"
+        exists = false
+      end
+      args = exists ? [dir, branch] : ["-B", branch, dir, @ref]
       @lock.synchronize { system("git", "-C", @worktrees, "worktree", "add", "-q", *args, out: File::NULL, err: File::NULL) }
       Dir.exist?(dir) ? dir : nil
     end

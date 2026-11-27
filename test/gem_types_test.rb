@@ -250,6 +250,31 @@ class GemTypesTest < Minitest::Test
 
   def batch = GemTypes::Batch.new([], base: Dir.tmpdir)
 
+  # A branch left from an earlier (squash-merged) PR is restarted from the
+  # ref; one that builds on the ref is reused.
+  def test_worktree_restarts_stale_branches
+    Dir.mktmpdir do |dir|
+      repo = File.join(dir, "repo")
+      git = ->(*a) { system("git", "-C", repo, *a, out: File::NULL, err: File::NULL) || raise("git #{a.join(" ")}") }
+      FileUtils.mkdir_p(File.join(repo, "gems", "foo", "1.0"))
+      File.write(File.join(repo, "gems", "foo", "1.0", "foo.rbs"), "")
+      system("git", "init", "-q", "-b", "main", repo)
+      git.("-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
+      git.("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "one")
+      git.("branch", "update-foo")
+      git.("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "two")
+      git.("branch", "add-bar", "main")
+      main = IO.popen(["git", "-C", repo, "rev-parse", "main"], &:read).strip
+      b = GemTypes::Batch.new([], base: File.join(dir, "base"), worktrees: repo, ref: "main")
+      _, err = capture_io { b.send(:worktree, "foo") }
+      assert_includes err, "restarting it from main"
+      assert_equal main, IO.popen(["git", "-C", repo, "rev-parse", "update-foo"], &:read).strip
+      _, err = capture_io { b.send(:worktree, "bar") }
+      assert_empty err
+      assert_equal "add-bar", IO.popen(["git", "-C", File.join(dir, "base", "wt", "bar"), "branch", "--show-current"], &:read).strip
+    end
+  end
+
   def test_next_fix_maps_required_files_to_gems
     b = batch
     fix = ->(text, gemfile = "", tried = [], root: nil) { b.send(:next_fix, text, {}, "x", tried, root: root, gemfile: gemfile) }
