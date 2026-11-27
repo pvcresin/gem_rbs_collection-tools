@@ -256,12 +256,16 @@ module GemTypes
         base_ok = results[best]
       end
       list.each do |src|
-        next unless self.class.suspect?(counts(src), results[src], base, base_ok)
+        # A run that failed without finishing a single test (two suites
+        # binding the same port: excon's test server on 9292) proves
+        # nothing about running alone, even when no run did better.
+        crashed = !results[src] && counts(src)[:total].zero?
+        next unless crashed || self.class.suspect?(counts(src), results[src], base, base_ok)
 
         # Timing tests (`Timeout.timeout(10) { ... }`, "in linear time")
         # fail under tracing however the runs are scheduled: running alone
         # takes as long again and fails the same way (addressable).
-        if (t = timeouts(src)).positive? && counts(src)[:total] >= base[:total] && counts(src)[:failed] - t <= base[:failed]
+        if !crashed && (t = timeouts(src)).positive? && counts(src)[:total] >= base[:total] && counts(src)[:failed] - t <= base[:failed]
           log("#{src}: #{t} extra failure(s) are timeouts under tracing; not rerunning it alone")
           next
         end

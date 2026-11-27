@@ -25,7 +25,7 @@ class CollectTest < Minitest::Test
       File.write(File.join(@config.out, "#{@name}.log"), @plan.dig(:logs, @name) || "10 runs, 10 assertions, 0 failures, 0 errors\n")
       File.write(File.join(@config.out, "#{@name}.rbs"), "class X\nend\n") if GemTypes::Sources::STATIC.include?(@name)
       @timed_out = @plan[:timeout]&.include?(@name)
-      !@timed_out
+      !@timed_out && !@plan[:fail]&.include?(@name)
     end
 
     def read = @plan.dig(:read, @name) || {}
@@ -105,6 +105,14 @@ class CollectTest < Minitest::Test
     collect(sources: %w[tracepoint lumitrace])
     assert_equal %w[lumitrace lumitrace tracepoint], ran.sort
     assert_empty @plan[:runs].last.last, "the repeat runs alone, without the concurrent TMPDIR"
+  end
+
+  def test_a_concurrent_run_that_ran_no_test_is_repeated_alone
+    @plan[:logs]["lumitrace"] = "Address already in use - bind(2) for 127.0.0.1:9292\n"
+    @plan[:logs]["tracepoint"] = "Address already in use - bind(2) for 127.0.0.1:9292\n"
+    @plan[:fail] = %w[tracepoint lumitrace]
+    collect(sources: %w[tracepoint lumitrace])
+    assert_equal %w[lumitrace lumitrace tracepoint tracepoint], ran.sort
   end
 
   def test_timeout_failures_are_not_repeated_alone
