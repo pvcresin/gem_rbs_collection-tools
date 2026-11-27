@@ -289,7 +289,7 @@ if defined?(RBS::Test::Tester)
       privates = klass.singleton_class.private_instance_methods(false)
       return if privates.empty?
 
-      type_name = factory.type_name(klass.name).absolute!
+      type_name = factory.type_name(GemTypesModuleName::NAME.bind_call(klass)).absolute!
       definition = builder.build_singleton(type_name)
       key = nil
       definition.methods.each do |name, method|
@@ -307,4 +307,56 @@ if defined?(RBS::Test::Tester)
     end
   end
   RBS::Test::Tester.prepend(GemTypesPrivateSingletons)
+
+  # Tester#install! looks the class up by klass.name, which a class may
+  # override (rubyzip's ExtraField::Generic.name returns a Symbol): the
+  # install raised and none of its methods were checked. Use Module#name.
+  module GemTypesModuleName
+    NAME = ::Module.instance_method(:name)
+
+    def install!(klass, **kw)
+      Thread.current[:gem_types_install_name] = NAME.bind_call(klass)
+      super
+    ensure
+      Thread.current[:gem_types_install_name] = nil
+    end
+  end
+  RBS::Test::Tester.prepend(GemTypesModuleName)
+
+  module GemTypesFactoryName
+    def type_name(string)
+      real = Thread.current[:gem_types_install_name]
+      super(real && !string.is_a?(String) ? real : string)
+    end
+  end
+  RBS::Factory.prepend(GemTypesFactoryName)
+
+  # The error tag ("[Foo#bar]") uses klass.name too.
+  module GemTypesErrorTag
+    def method_tag(error)
+      tag = super
+      return tag if error.klass.singleton_class?
+
+      tag.sub(/\A\[[^#]*#/) { "[#{GemTypesModuleName::NAME.bind_call(error.klass)}#" }
+    end
+  end
+  RBS::Test::Errors.singleton_class.prepend(GemTypesErrorTag)
+end
+
+# rbs/test checks a returned Enumerator by running it. For one of unknown
+# size (`to_enum(:each)` over a stream: rubyzip's InputStream#each) that
+# reads what the caller has not read yet, and the caller then gets nothing.
+# Such an Enumerator is checked by class only.
+if defined?(RBS::Test::TypeCheck)
+  module GemTypesUnsizedEnumerator
+    def value(val, type)
+      if type.is_a?(RBS::Types::ClassInstance) && type.name.to_s.delete_prefix("::") == "Enumerator" &&
+         ::Enumerator === val && (val.size.nil? rescue true)
+        return true
+      end
+
+      super
+    end
+  end
+  RBS::Test::TypeCheck.prepend(GemTypesUnsizedEnumerator)
 end

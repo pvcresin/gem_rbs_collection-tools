@@ -25,3 +25,18 @@ class Pre
   def name = @name
   def wrapped = @wrapped
 end
+# Overrides Module#name (rubyzip's ExtraField::Generic.name returns a Symbol).
+class Named
+  def self.name = :named
+  def value = 1
+end
+# An Enumerator over a stream: iterating it consumes the stream.
+class Stream
+  def initialize = (@lines = %w[a b])
+  def each
+    return to_enum(:each) unless block_given?
+
+    yield @lines.shift until @lines.empty?
+  end
+  def rest = @lines
+end

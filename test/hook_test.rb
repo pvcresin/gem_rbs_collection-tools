@@ -16,7 +16,7 @@ class HookTest < Minitest::Test
       FileUtils.cp(Dir[File.join(FIX, "*.rb")], dir)
       FileUtils.mkdir_p(File.join(dir, "sig"))
       File.write(File.join(dir, "sig", "lib.rbs"), rbs)
-      Open3.capture2e(env, File.join(ROOT, "exe", "gem-types"), "check", "-s", File.join(dir, "sig"), "-t", "Tag,Disp,Pre",
+      Open3.capture2e(env, File.join(ROOT, "exe", "gem-types"), "check", "-s", File.join(dir, "sig"), "-t", "Tag,Disp,Pre,Named,Stream",
                       "--", "ruby", "run.rb", chdir: dir)
     end
   end
@@ -48,6 +48,20 @@ class HookTest < Minitest::Test
     assert_includes out, "pre=x,true"
     out, = check(File.read(File.join(FIX, "lib.rbs")).sub("def name=: (String v) -> String", "def name=: (Integer v) -> String"))
     assert_match(/\[Pre#name=\] ArgumentTypeError/, out)
+  end
+
+  # Module#name overridden to return a Symbol: the class is still hooked.
+  def test_classes_with_their_own_name_are_checked
+    out, = check(File.read(File.join(FIX, "lib.rbs")).sub("def value: () -> Integer", "def value: () -> String"))
+    assert_match(/Named#value\] ReturnTypeError/, out)
+  end
+
+  # A returned Enumerator of unknown size is not iterated by the check: it
+  # may read a stream the caller has not read yet.
+  def test_unsized_enumerators_are_not_consumed
+    out, st = check(File.read(File.join(FIX, "lib.rbs")))
+    assert st.success?, out
+    assert_includes out, "stream_rest=2,2"
   end
 
   def test_basic_object_types_are_checked

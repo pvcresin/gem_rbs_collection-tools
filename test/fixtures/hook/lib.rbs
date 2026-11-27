@@ -14,3 +14,12 @@ class Pre
   def name: () -> String?
   def wrapped: () -> bool?
 end
+class Named
+  def value: () -> Integer
+end
+class Stream
+  def initialize: () -> void
+  def each: () { (String) -> void } -> void
+          | () -> Enumerator[String, void]
+  def rest: () -> Array[String]
+end
