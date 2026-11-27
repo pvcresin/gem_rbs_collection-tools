@@ -3,6 +3,20 @@
 module GemTypes
   # Combines evidence from all sources into a draft RBS and a Markdown report.
   class Merger
+    # ['["+", String, Integer]', '["+", Array, Hash]'] -> ['["+", Array | String, Hash | Integer]']:
+    # one tuple per tag and size, with the types seen at each position.
+    def self.collapse_tuples(shapes)
+      groups = Hash.new { |h, k| h[k] = [] }
+      shapes.each do |sh|
+        tag, *rest = sh.delete_prefix("[").delete_suffix("]").split(", ")
+        groups[[tag, rest.size]] << rest
+      end
+      groups.map do |(tag, _), rows|
+        cols = rows.transpose.map { |ts| ts.uniq.sort.join(" | ") }
+        "[#{[tag, *cols].join(', ')}]"
+      end
+    end
+
     # evidence: { source name => { key => Evidence } }
     # classes:  { "Foo::Bar" => { kind:, super: } } from the RBS-producing sources
     # shapes:   tracepoint's per-call-shape lines
@@ -211,7 +225,7 @@ module GemTypes
           notes << "block ran with self = the receiver (DSL)" if tp.block_self == ["receiver"]
           notes << "block returned #{tp.block_returns.join(' | ')}" if tp.block_returns && !tp.block_returns.empty?
           if tp.return_tuples && !tp.return_tuples.empty?
-            notes << "returned Arrays of tagged tuples (consider a union of tuple types over Array[untyped]): #{tp.return_tuples.join(' | ')}"
+            notes << "returned Arrays of tagged tuples (consider a union of tuple types over Array[untyped]): #{Merger.collapse_tuples(tp.return_tuples).join(' | ')}"
           end
           out << "- tracepoint notes: #{notes.join('; ')}" unless notes.empty?
         end

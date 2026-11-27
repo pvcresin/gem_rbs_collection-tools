@@ -274,6 +274,8 @@ class GemTypesTest < Minitest::Test
       assert_equal ['["+", String, Integer]', '["~", String, Integer, String]'], data["Foo.diff"]["return_tuples"]
       assert_nil data["Foo.pairs"]["return_tuples"]
       assert_nil data["Foo.mixed"]["return_tuples"]
+      assert_equal ['["+", Array | String, Hash | Integer]', '["~", String, Integer, nil]'],
+                   GemTypes::Merger.collapse_tuples(['["+", String, Integer]', '["+", Array, Hash]', '["~", String, Integer, nil]'])
     end
   end
 
