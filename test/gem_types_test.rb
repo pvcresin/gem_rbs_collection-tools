@@ -325,7 +325,9 @@ class GemTypesTest < Minitest::Test
     Dir.mktmpdir do |root|
       FileUtils.mkdir_p(File.join(root, "ext", "unf_ext"))
       File.write(File.join(root, "ext", "unf_ext", "extconf.rb"), "")
-      assert_equal "bundle exec rake compile", fix.("cannot load such file -- 3.3/unf_ext.so", root: root)[:pre]
+      pre = fix.("cannot load such file -- 3.3/unf_ext.so", root: root)[:pre]
+      assert_equal "bundle exec rake compile || ((cd ext/unf_ext && bundle exec ruby extconf.rb && make) && " \
+                   "mkdir -p lib/. && cp ext/unf_ext/unf_ext.#{RbConfig::CONFIG['DLEXT']} lib/./)", pre
       assert_equal "gem-other", fix.("cannot load such file -- other", root: root)[:name]
       FileUtils.mkdir_p(File.join(root, "ext", "nio4r"))
       File.write(File.join(root, "ext", "nio4r", "extconf.rb"), %(create_makefile("nio4r_ext")\n))

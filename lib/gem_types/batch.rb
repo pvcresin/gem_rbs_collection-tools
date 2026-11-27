@@ -257,7 +257,16 @@ module GemTypes
       missing = text.scan(/cannot load such file -- (\S+)/).flatten.map { File.basename(_1, ".*") }
       return unless missing.intersect?(exts)
 
-      fix = { name: "compile", pre: "bundle exec rake compile" }
+      # Without the Rakefile when that fails (nio4r's needs rubocop): build
+      # each extension with extconf.rb and make, and copy it where
+      # create_makefile's name puts it under lib/.
+      direct = Dir[File.join(root, "ext", "**", "extconf.rb")].map do |f|
+        dir = File.dirname(f).delete_prefix("#{root}/")
+        made = File.read(f, encoding: "UTF-8").scrub[/create_makefile\(?\s*["']([^"']+)["']/, 1] || File.basename(dir)
+        "(cd #{dir.shellescape} && bundle exec ruby extconf.rb && make) && mkdir -p #{File.join('lib', File.dirname(made)).shellescape} && " \
+          "cp #{File.join(dir, "#{File.basename(made)}.#{RbConfig::CONFIG['DLEXT']}").shellescape} #{File.join('lib', File.dirname(made)).shellescape}/"
+      end
+      fix = { name: "compile", pre: "bundle exec rake compile || (#{direct.join(' && ')})" }
       # Rake::ExtensionTask comes from rake-compiler, which the gem's own
       # Gemfile has but env/Gemfile may not (nio4r).
       tasks = Dir[File.join(root, "{Rakefile,rakelib/*.rake}")].map { File.read(_1, encoding: "UTF-8").scrub }.join("\n")
