@@ -53,6 +53,9 @@ if gemfile
     if (pm = m[2].match(/platforms?:\s*(\[[^\]]*\]|:\w+)/))
       next unless mri.(pm[1].scan(/:(\w+)/).flatten)
     end
+    # JRuby-only gems: `gem "jruby-openssl" if defined? JRUBY_VERSION`
+    # (nio4r), or one named jruby-*: on CRuby it shadows openssl.
+    next if m[2].match?(/\bif\s+(defined\?\s*\(?\s*JRUBY_VERSION|RUBY_PLATFORM\s*==\s*["']java|RUBY_ENGINE\s*==\s*["']jruby)/) || m[1].start_with?("jruby-")
     name = m[1]
     # A skipped tool the test helpers require (docile's spec_helper does
     # `require "simplecov"`) is needed after all.
