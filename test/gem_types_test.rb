@@ -240,6 +240,9 @@ class GemTypesTest < Minitest::Test
     assert_equal %q(for t in test/it\'s_test.rb test/sub/deep/a_test.rb test/test_netrc.rb; ) +
                  %q(do bundle exec ruby -Ilib -Itest "$t"; done), cmd
     assert_equal "bundle exec rake test", detect({ "test/a_test.rb" => "", "Rakefile" => "Rake::TestTask.new" })
+    # jbuilder: the test task exists only under CI or Appraisal
+    rakefile = %(if !ENV["APPRAISAL_INITIALIZED"] && !ENV["CI"]\n  Appraisal::Task.new\nelse\n  Rake::TestTask.new\nend\n)
+    assert_equal "CI=1 bundle exec rake test", detect({ "test/a_test.rb" => "", "Rakefile" => rakefile })
   end
 
   def test_detect_test_cmd_spec_without_rspec
@@ -327,6 +330,9 @@ class GemTypesTest < Minitest::Test
       FileUtils.mkdir_p(File.join(root, "ext", "nio4r"))
       File.write(File.join(root, "ext", "nio4r", "extconf.rb"), %(create_makefile("nio4r_ext")\n))
       assert_equal "compile", fix.("cannot load such file -- nio4r_ext", root: root)[:name]
+      File.write(File.join(root, "Rakefile"), %(require "rake/extensiontask"\n))
+      assert_equal "rake-compiler", fix.("cannot load such file -- nio4r_ext", root: root)[:gem]
+      assert_nil fix.("cannot load such file -- nio4r_ext", %(gem "rake-compiler"\n), root: root)[:gem]
     end
     Dir.mktmpdir do |dir|
       FileUtils.mkdir_p(File.join(dir, "test", "support"))

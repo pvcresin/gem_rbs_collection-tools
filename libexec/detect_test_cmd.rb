@@ -47,4 +47,10 @@ if (repo / "test").directory?
     cmds << "bundle exec rake test" if files.empty? && rake_task.("test")
   end
 end
+# A Rakefile that defines the test task only under Appraisal or CI (jbuilder:
+# `if !ENV["APPRAISAL_INITIALIZED"] && !ENV["CI"]` makes appraisal the
+# default): set CI so `rake test` exists.
+if rake.match?(/Appraisal::Task/) && rake.match?(/ENV\[["']CI["']\]/)
+  cmds = cmds.map { |c| c.start_with?("bundle exec rake") ? "CI=1 #{c}" : c }
+end
 puts cmds.join("; ") unless cmds.empty?

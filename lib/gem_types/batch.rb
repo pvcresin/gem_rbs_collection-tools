@@ -215,7 +215,7 @@ module GemTypes
     def next_fix(text, env, test_cmd, tried, root: nil, gemfile: "")
       cands = []
       # A C extension that was never built: the tests cannot load its .so.
-      if root && (ext = compile_fix(text, root))
+      if root && (ext = compile_fix(text, root, gemfile))
         cands << ext
       end
       if test_cmd.include?("rspec") && text.match?(RSPEC2)
@@ -245,7 +245,7 @@ module GemTypes
     # { name: "compile", pre: "bundle exec rake compile" } when the log
     # cannot load one of the gem's own extensions (ext/**/extconf.rb names
     # them; unf_ext's tests fail with "cannot load such file -- 3.3/unf_ext.so").
-    def compile_fix(text, root)
+    def compile_fix(text, root, gemfile = "")
       # The extension's name: its directory, or what extconf.rb passes to
       # create_makefile (nio4r's ext/nio4r builds nio4r_ext).
       exts = Dir[File.join(root, "ext", "**", "extconf.rb")].flat_map do |f|
@@ -257,7 +257,12 @@ module GemTypes
       missing = text.scan(/cannot load such file -- (\S+)/).flatten.map { File.basename(_1, ".*") }
       return unless missing.intersect?(exts)
 
-      { name: "compile", pre: "bundle exec rake compile" }
+      fix = { name: "compile", pre: "bundle exec rake compile" }
+      # Rake::ExtensionTask comes from rake-compiler, which the gem's own
+      # Gemfile has but env/Gemfile may not (nio4r).
+      tasks = Dir[File.join(root, "{Rakefile,rakelib/*.rake}")].map { File.read(_1, encoding: "UTF-8").scrub }.join("\n")
+      fix[:gem] = "rake-compiler" if tasks.include?("rake/extensiontask") && !gemfile.match?(/^\s*gem\s+["']rake-compiler["']/)
+      fix
     end
 
     # Gems that may provide a required path, most likely first:
