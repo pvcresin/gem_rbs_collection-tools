@@ -64,6 +64,14 @@ class HookTest < Minitest::Test
     assert_includes out, "stream_rest=2,2"
   end
 
+  # The original and wrapper aliases rbs/test adds are private: specs that
+  # list a class's public methods must not see them.
+  def test_hook_aliases_are_private
+    out, st = check(File.read(File.join(FIX, "lib.rbs")))
+    assert st.success?, out
+    assert_includes out, "pub=keep,kept,lam?,run\n"
+  end
+
   def test_basic_object_types_are_checked
     out, = check(File.read(File.join(FIX, "lib.rbs")).sub("?{ (Tag) -> void } -> String", "?{ (Tag) -> void } -> Integer"))
     assert_match(/\[Tag#tag!\] ReturnTypeError/, out)

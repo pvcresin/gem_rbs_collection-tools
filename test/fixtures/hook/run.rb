@@ -14,3 +14,4 @@ Named.new.value
 s = Stream.new
 e = s.each
 puts "stream_rest=#{s.rest.size},#{e.to_a.size}"
+puts "pub=#{Disp.public_instance_methods(false).sort.join(",")}"

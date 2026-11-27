@@ -360,3 +360,19 @@ if defined?(RBS::Test::TypeCheck)
   end
   RBS::Test::TypeCheck.prepend(GemTypesUnsizedEnumerator)
 end
+
+# rbs/test keeps the original method as a public `name__without__RBS_TEST_...`
+# alias (and the wrapper as `name__with__...`). Specs that list a class's
+# public methods (addressable calls every reader of a frozen URI) found and
+# called them. Make both aliases private: the wrapper calls the original
+# with __send__, and the hooked name keeps the original's visibility.
+if defined?(RBS::Test::Hook)
+  module GemTypesPrivateAliases
+    def setup_alias_method_chain(klass, target, random:)
+      super
+      names = alias_names(target, random)
+      klass.instance_eval { private(*names) }
+    end
+  end
+  RBS::Test::Hook.singleton_class.prepend(GemTypesPrivateAliases)
+end

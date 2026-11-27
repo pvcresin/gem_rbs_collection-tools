@@ -126,6 +126,14 @@ the caller's block itself (`RBS_TEST_RAW_BLOCKS`, computed from the
 source: stored and not yielded, or forwarded, delegated or handed to
 `new` for such a method).
 
+Checked runs skip tests that measure time (a `Timeout.timeout` or
+`Benchmark` in the test body, or RSpec metadata such as `:regexp_timing`):
+under runtime type checking they only wait for their timeout, and
+addressable's ReDoS specs made one checked run take hours. The run says how
+many it skipped; `GEM_TYPES_KEEP_TIMING=1` keeps them. rbs/test's
+`__with__`/`__without__` aliases are private, so specs that list a class's
+public methods do not find them.
+
 rbs/test installs its hooks when a class body ends, so methods a gem adds
 to an existing class without reopening it (a top-level `def IPAddress`,
 `String.class_eval`, `define_method`) were never checked. `rbs_check.sh`
