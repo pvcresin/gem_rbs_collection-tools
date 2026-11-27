@@ -137,6 +137,7 @@ module GemTypes
     #   obj.must_equal on minitest 6 -> pin minitest ~> 5.0
     #   cannot load such file -- x / command not found: x
     #                             -> add gem x to env/Gemfile and install
+    #   cannot load the gem's own extension -> bundle exec rake compile
     # Environment fixes are saved in gem-types.json for later commands.
     def run_tests_with_fixes(w, env, test_cmd, logs)
       log = File.join(logs, "tests.log")
@@ -165,6 +166,9 @@ module GemTypes
             File.write(gemfile, before)
             next
           end
+        end
+        if fix[:pre] && !sh(new_env, fix[:pre], root, File.join(logs, "pre-#{fix[:name]}.log"))
+          next
         end
         runs += 1
         log2 = File.join(logs, "tests-fix#{runs}-#{fix[:name].tr('^a-zA-Z0-9_-', '_')}.log")
@@ -210,6 +214,10 @@ module GemTypes
     # except to pin minitest 5).
     def next_fix(text, env, test_cmd, tried, root: nil, gemfile: "")
       cands = []
+      # A C extension that was never built: the tests cannot load its .so.
+      if root && (ext = compile_fix(text, root))
+        cands << ext
+      end
       if test_cmd.include?("rspec") && text.match?(RSPEC2)
         rubyopt = [env["RUBYOPT"], "-r#{File.join(LIBEXEC, 'rspec2_compat.rb')}"].compact.join(" ")
         cands << { name: "rspec2", env: { "RUBYOPT" => rubyopt } }
@@ -230,6 +238,19 @@ module GemTypes
       end
       text.scan(/command not found: ([\w\-]+)/).flatten.uniq.each(&add)
       cands.find { |c| !tried.include?(c[:name]) }
+    end
+
+    # { name: "compile", pre: "bundle exec rake compile" } when the log
+    # cannot load one of the gem's own extensions (ext/**/extconf.rb names
+    # them; unf_ext's tests fail with "cannot load such file -- 3.3/unf_ext.so").
+    def compile_fix(text, root)
+      exts = Dir[File.join(root, "ext", "**", "extconf.rb")].map { File.basename(File.dirname(_1)) }
+      return if exts.empty?
+
+      missing = text.scan(/cannot load such file -- (\S+)/).flatten.map { File.basename(_1, ".*") }
+      return unless missing.intersect?(exts)
+
+      { name: "compile", pre: "bundle exec rake compile" }
     end
 
     # Gems that may provide a required path, most likely first:
