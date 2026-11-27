@@ -317,12 +317,16 @@ class GemTypesTest < Minitest::Test
     assert_equal "foo_bar", fix.("cannot load such file -- foo/bar", "", ["gem-foo-bar"])[:gem]
     assert_equal "foo", fix.("cannot load such file -- foo/bar", "", %w[gem-foo-bar gem-foo_bar])[:gem]
     assert_nil fix.("cannot load such file -- spec_helper")
+    assert_equal "rake", fix.("can't find executable rake for gem rake. rake is not currently included in the bundle")[:gem]
     # the gem's own C extension, not built yet
     Dir.mktmpdir do |root|
       FileUtils.mkdir_p(File.join(root, "ext", "unf_ext"))
       File.write(File.join(root, "ext", "unf_ext", "extconf.rb"), "")
       assert_equal "bundle exec rake compile", fix.("cannot load such file -- 3.3/unf_ext.so", root: root)[:pre]
       assert_equal "gem-other", fix.("cannot load such file -- other", root: root)[:name]
+      FileUtils.mkdir_p(File.join(root, "ext", "nio4r"))
+      File.write(File.join(root, "ext", "nio4r", "extconf.rb"), %(create_makefile("nio4r_ext")\n))
+      assert_equal "compile", fix.("cannot load such file -- nio4r_ext", root: root)[:name]
     end
     Dir.mktmpdir do |dir|
       FileUtils.mkdir_p(File.join(dir, "test", "support"))

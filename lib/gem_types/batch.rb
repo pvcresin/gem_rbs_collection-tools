@@ -237,6 +237,8 @@ module GemTypes
         gem_names_for(f).each(&add)
       end
       text.scan(/command not found: ([\w\-]+)/).flatten.uniq.each(&add)
+      # bundle exec rake with no rake in the Gemfile (kramdown).
+      text.scan(/can't find executable ([\w\-]+) for gem ([\w\-]+)/).map(&:last).uniq.each(&add)
       cands.find { |c| !tried.include?(c[:name]) }
     end
 
@@ -244,7 +246,12 @@ module GemTypes
     # cannot load one of the gem's own extensions (ext/**/extconf.rb names
     # them; unf_ext's tests fail with "cannot load such file -- 3.3/unf_ext.so").
     def compile_fix(text, root)
-      exts = Dir[File.join(root, "ext", "**", "extconf.rb")].map { File.basename(File.dirname(_1)) }
+      # The extension's name: its directory, or what extconf.rb passes to
+      # create_makefile (nio4r's ext/nio4r builds nio4r_ext).
+      exts = Dir[File.join(root, "ext", "**", "extconf.rb")].flat_map do |f|
+        made = File.read(f, encoding: "UTF-8").scrub.scan(/create_makefile\(?\s*["']([^"']+)["']/).flatten.map { File.basename(_1) }
+        [File.basename(File.dirname(f)), *made]
+      end
       return if exts.empty?
 
       missing = text.scan(/cannot load such file -- (\S+)/).flatten.map { File.basename(_1, ".*") }
