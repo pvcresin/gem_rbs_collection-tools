@@ -499,7 +499,7 @@ module GemTypes
       rbs = RbsReader.read_files(Verify.sig_files(sigdir), include_private: true)
       # Classes outside the namespace that the RBS reopens are checked too,
       # but only for the methods it declares (as `live` does).
-      reopened = rbs.classes.keys.reject { |c| config.in_ns?("#{c}#x") }
+      reopened = Verify.reopened(config, rbs)
       targets = (config.ns.flat_map { |n| [n, "#{n}::*"] } + reopened).join(",")
       only = rbs.methods.keys.select { |k| reopened.include?(GemTypes.split_key(k).first) }
       env = Verify.check_env(config)

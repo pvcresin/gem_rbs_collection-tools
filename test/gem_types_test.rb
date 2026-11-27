@@ -145,6 +145,22 @@ class GemTypesTest < Minitest::Test
     assert_includes io.string, "attr_reader b: bot"
   end
 
+  def test_reopened_classes_need_declared_methods
+    r = GemTypes::RbsReader.read(<<~RBS)
+      module Diff::LCS
+        def lcs: (untyped) -> untyped
+      end
+      class Array[unchecked out Elem]
+        include Diff::LCS
+      end
+      class String
+        def to_diff: () -> String
+      end
+    RBS
+    config = GemTypes::Config.new(ns: ["Diff"])
+    assert_equal ["String"], GemTypes::Verify.reopened(config, r)
+  end
+
   def test_def_index_qualified_class_name_inside_module
     Dir.mktmpdir do |dir|
       File.write(File.join(dir, "a.rb"), <<~RUBY)

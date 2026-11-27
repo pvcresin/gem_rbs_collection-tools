@@ -26,6 +26,15 @@ module GemTypes
       raw.empty? ? env : env.merge("RBS_TEST_RAW_BLOCKS" => raw.join(","))
     end
 
+    # Classes outside the namespace that the RBS reopens and declares
+    # methods for. One reopened only to include a module (diff-lcs's
+    # `class Array; include Diff::LCS; end`) is left out: with no declared
+    # method to restrict the hooks to, every core method would be hooked.
+    def reopened(config, rbs)
+      with_methods = rbs.methods.keys.to_set { |k| GemTypes.split_key(k).first }
+      rbs.classes.keys.reject { |c| config.in_ns?("#{c}#x") }.select { |c| with_methods.include?(c) }
+    end
+
     # Signature files that do not parse (or cannot be read). Raised before
     # any check, so broken RBS is never reported as passing.
     class SigError < StandardError; end
@@ -549,7 +558,7 @@ module GemTypes
       # are checked; only the methods the RBS declares for them are hooked
       # (RBS_TEST_ONLY_METHODS, see libexec/rbs_hook_fix.rb).
       rbs = RbsReader.read_files(files, include_private: true)
-      reopened = rbs.classes.keys.reject { |c| config.in_ns?("#{c}#x") }
+      reopened = Verify.reopened(config, rbs)
       targets = (config.ns.flat_map { |n| [n, "#{n}::*"] } + reopened).join(",")
       prefix = File.join(dir, "run")
       src = Sources::Base.new(config)
