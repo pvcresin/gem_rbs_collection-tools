@@ -9,3 +9,8 @@ class Disp
   def keep: () { () -> untyped } -> Proc
   def kept: () -> Proc?
 end
+class Pre
+  def name=: (String v) -> String
+  def name: () -> String?
+  def wrapped: () -> bool?
+end

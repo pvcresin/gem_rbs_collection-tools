@@ -16,7 +16,7 @@ class HookTest < Minitest::Test
       FileUtils.cp(Dir[File.join(FIX, "*.rb")], dir)
       FileUtils.mkdir_p(File.join(dir, "sig"))
       File.write(File.join(dir, "sig", "lib.rbs"), rbs)
-      Open3.capture2e(env, File.join(ROOT, "exe", "gem-types"), "check", "-s", File.join(dir, "sig"), "-t", "Tag,Disp",
+      Open3.capture2e(env, File.join(ROOT, "exe", "gem-types"), "check", "-s", File.join(dir, "sig"), "-t", "Tag,Disp,Pre",
                       "--", "ruby", "run.rb", chdir: dir)
     end
   end
@@ -38,6 +38,16 @@ class HookTest < Minitest::Test
     out, st = check(File.read(File.join(FIX, "lib.rbs")), "RBS_TEST_RAW_BLOCKS" => "Disp#keep")
     assert st.success?, out
     assert_includes out, "kept_same=true"
+  end
+
+  # A class that prepends wrappers of its own methods (Addressable::URI's
+  # RestoreOnFailure): the hook must not recurse, and must still check.
+  def test_prepended_wrappers
+    out, st = check(File.read(File.join(FIX, "lib.rbs")))
+    assert st.success?, out
+    assert_includes out, "pre=x,true"
+    out, = check(File.read(File.join(FIX, "lib.rbs")).sub("def name=: (String v) -> String", "def name=: (Integer v) -> String"))
+    assert_match(/\[Pre#name=\] ArgumentTypeError/, out)
   end
 
   def test_basic_object_types_are_checked

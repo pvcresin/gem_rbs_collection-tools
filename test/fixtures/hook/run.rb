@@ -7,3 +7,6 @@ blk = proc { 1 }
 d = Disp.new
 d.keep(&blk)
 puts "kept_same=#{d.kept.equal?(blk)}"
+pre = Pre.new
+pre.name = "x"
+puts "pre=#{pre.name},#{pre.wrapped}"

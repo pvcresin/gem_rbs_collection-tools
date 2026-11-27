@@ -10,3 +10,18 @@ class Disp
   def keep(&blk) = (@kept = blk)
   def kept = @kept
 end
+class Pre
+  module Wrap
+    def name=(v)
+      super
+      @wrapped = true
+      v
+    end
+  end
+  prepend Wrap
+  def name=(v)
+    @name = v
+  end
+  def name = @name
+  def wrapped = @wrapped
+end

@@ -19,6 +19,24 @@ if defined?(RBS::Test::Hook)
   end
   RBS::Test::Hook.singleton_class.prepend(RBSHookKernelMethod)
 
+  # A class that prepends a module wrapping its own methods with `super`
+  # (Addressable::URI prepends RestoreOnFailure): rbs/test aliases in the
+  # class, alias_method picks up the prepended method, and its `super` reaches
+  # the hook again (SystemStackError). Hook the prepended module instead, so
+  # the check wraps what callers call.
+  module RBSHookPrepended
+    def hook_instance_method(klass, method, key:)
+      owner = klass.instance_method(method).owner
+      ancestors = klass.ancestors
+      if owner != klass && owner.instance_of?(Module) && ancestors.index(owner) < ancestors.index(klass)
+        return super(owner, method, key: key)
+      end
+
+      super
+    end
+  end
+  RBS::Test::Hook.singleton_class.prepend(RBSHookPrepended)
+
   # The generated wrapper method:
   # - calls block_given? and Object.new without a receiver, which a
   #   BasicObject subclass sends to method_missing (Builder::XmlMarkup
