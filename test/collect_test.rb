@@ -107,6 +107,22 @@ class CollectTest < Minitest::Test
     assert_empty @plan[:runs].last.last, "the repeat runs alone, without the concurrent TMPDIR"
   end
 
+  def test_timeout_failures_are_not_repeated_alone
+    @plan[:logs]["lumitrace"] = <<~LOG
+      Failures:
+
+        1) T matches in linear time
+           Failure/Error:
+             expected no Exception, got #<Timeout::Error: execution expired> with backtrace:
+
+      Finished in 1 second
+      10 examples, 1 failure
+    LOG
+    @plan[:logs]["tracepoint"] = "10 examples, 0 failures\n"
+    collect(sources: %w[tracepoint lumitrace])
+    assert_equal %w[lumitrace tracepoint], ran.sort
+  end
+
   def test_suspect
     base = { total: 10, failed: 1 }
     refute GemTypes::Collect.suspect?({ total: 10, failed: 1 }, true, base, true)

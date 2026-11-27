@@ -258,6 +258,14 @@ module GemTypes
       list.each do |src|
         next unless self.class.suspect?(counts(src), results[src], base, base_ok)
 
+        # Timing tests (`Timeout.timeout(10) { ... }`, "in linear time")
+        # fail under tracing however the runs are scheduled: running alone
+        # takes as long again and fails the same way (addressable).
+        if (t = timeouts(src)).positive? && counts(src)[:total] >= base[:total] && counts(src)[:failed] - t <= base[:failed]
+          log("#{src}: #{t} extra failure(s) are timeouts under tracing; not rerunning it alone")
+          next
+        end
+
         log("#{src}: the concurrent run looked worse (#{describe(counts(src), results[src])} vs " \
             "#{describe(base, base_ok)}): running it again alone")
         run_alone(src)
@@ -267,6 +275,18 @@ module GemTypes
     def run_alone(src)
       ok, secs, = timed(src)
       report(src, ok ? "ok" : "failed", secs)
+    end
+
+    # Failures in src's log that are timeouts (RSpec and Minitest output).
+    def timeouts(src)
+      f = File.join(@config.out, "#{src}.log")
+      return 0 unless File.exist?(f)
+
+      text = File.read(f, encoding: "UTF-8").scrub
+      # RSpec lists pending examples first, numbered the same way.
+      text = text[/^Failures:\n(.*?)(^Finished in|\z)/m, 1] || text if text.include?("\nFailures:\n")
+      failures = text.split(/^\s*\d+\) /).drop(1)
+      failures.count { |b| b[0, 2000] =~ /Timeout::Error|execution expired/ }
     end
 
     def describe(c, ok) = "#{c[:total]} #{c[:unit]}, #{c[:failed]} failing#{ok ? '' : ', exit non-zero'}"
