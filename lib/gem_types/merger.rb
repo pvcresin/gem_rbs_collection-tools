@@ -210,6 +210,9 @@ module GemTypes
           notes << "returned what the block returned" if tp.always?(tp.block_passthrough)
           notes << "block ran with self = the receiver (DSL)" if tp.block_self == ["receiver"]
           notes << "block returned #{tp.block_returns.join(' | ')}" if tp.block_returns && !tp.block_returns.empty?
+          if tp.return_tuples && !tp.return_tuples.empty?
+            notes << "returned Arrays of tagged tuples (consider a union of tuple types over Array[untyped]): #{tp.return_tuples.join(' | ')}"
+          end
           out << "- tracepoint notes: #{notes.join('; ')}" unless notes.empty?
         end
         if (lines = @shape_lines[k]) && !lines.empty?

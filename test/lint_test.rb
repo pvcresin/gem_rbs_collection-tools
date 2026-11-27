@@ -95,6 +95,39 @@ class LintTest < Minitest::Test
     assert_finds(/A#name=: a setter takes exactly one/, found)
   end
 
+  # request_store's write returned its value under a concrete type.
+  def test_passthrough_argument_suggests_a_type_parameter
+    found = lint(<<~RUBY, <<~RBS)
+      class A
+        def self.write(key, value)
+          store[key] = value
+        end
+        def keep(h)
+          @h = h
+        end
+        def generic(x) = x
+        def store=(s)
+          Thread.current[:s] = s
+        end
+        def early(x)
+          return nil if x.empty?
+          x
+        end
+      end
+    RUBY
+      class A
+        def self.write: (Symbol key, Hash[untyped, untyped] value) -> Hash[untyped, untyped]
+        def keep: (Hash[Symbol, String] h) -> Hash[Symbol, String]
+        def generic: [T] (T x) -> T
+        def store=: (Hash[untyped, untyped] s) -> Hash[untyped, untyped]
+        def early: (Array[String] x) -> Array[String]
+      end
+    RBS
+    assert_finds(/A\.write: returns its argument `value` unchanged: `\[T < Hash\[untyped, untyped\]\] \(T value\) -> T`/, found)
+    assert_finds(/A#keep: returns its argument `h` unchanged/, found)
+    refute(found.any? { _1.match?(/A#(generic|store=|early): returns its argument/) }, found.inspect)
+  end
+
   def test_nil_return
     found = lint(<<~RUBY, <<~RBS)
       class A

@@ -2,6 +2,8 @@
 
 require "minitest/autorun"
 require "tmpdir"
+require "json"
+require "fileutils"
 require_relative "../lib/gem_types"
 
 class GemTypesTest < Minitest::Test
@@ -249,6 +251,31 @@ class GemTypesTest < Minitest::Test
   end
 
   def batch = GemTypes::Batch.new([], base: Dir.tmpdir)
+
+  # The tracepoint hook records tagged tuples in returned Arrays (Hashdiff's
+  # ["+", path, value] changes), only when every returned element has one.
+  def test_observe_records_return_tuples
+    Dir.mktmpdir do |dir|
+      lib = File.join(dir, "lib")
+      FileUtils.mkdir_p(lib)
+      File.write(File.join(lib, "foo.rb"), <<~RUBY)
+        module Foo
+          def self.diff(a) = a ? [["+", "a.b", 1], ["~", "c", 1, "x"]] : []
+          def self.pairs = [[1, 2]]
+          def self.mixed(a) = a ? [["-", "a", nil]] : [1]
+        end
+      RUBY
+      out = File.join(dir, "obs")
+      FileUtils.mkdir_p(out)
+      env = { "OBSERVE_NS" => "Foo", "OBSERVE_DIR" => out, "OBSERVE_LIB" => lib }
+      hook = File.expand_path("../lib/gem_types/hooks/observe.rb", __dir__)
+      assert system(env, "ruby", "-I#{lib}", "-r#{hook}", "-e", "require 'foo'; Foo.diff(true); Foo.diff(false); Foo.pairs; Foo.mixed(true); Foo.mixed(false)")
+      data = JSON.parse(File.read(Dir[File.join(out, "*.json")].first))
+      assert_equal ['["+", String, Integer]', '["~", String, Integer, String]'], data["Foo.diff"]["return_tuples"]
+      assert_nil data["Foo.pairs"]["return_tuples"]
+      assert_nil data["Foo.mixed"]["return_tuples"]
+    end
+  end
 
   # A branch left from an earlier (squash-merged) PR is restarted from the
   # ref; one that builds on the ref is reused.

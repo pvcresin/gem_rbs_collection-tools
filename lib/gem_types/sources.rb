@@ -106,7 +106,7 @@ module GemTypes
 
             e = out[key] ||= Evidence.new(source: name, params: [], block: [], returns: [], raises: [], calls: 0,
                                           self_returns: [0, 0], block_passthrough: [0, 0], block_args: [],
-                                          block_returns: [], block_self: [], returns_without_block: [])
+                                          block_returns: [], block_self: [], returns_without_block: [], return_tuples: [])
             e.calls += d["calls"]
             e.block |= d["block"]
             e.returns |= d["returns"]
@@ -118,6 +118,8 @@ module GemTypes
             e.block_returns |= d["block_returns"] || []
             e.block_self |= d["block_self"] || []
             e.returns_without_block |= d["returns_without_block"] || []
+            # nil in any run: some returned Array was not made of tuples.
+            e.return_tuples = d.key?("return_tuples") && d["return_tuples"].nil? || e.return_tuples.nil? ? nil : e.return_tuples | (d["return_tuples"] || [])
             d["kinds"].each do |label, (kind, pname)|
               # Anonymous `*` / `**` (from `...` too) have an empty name.
               p = e.params.find { |x| x[:name] == pname && (!pname.empty? || x[:kind] == kind) } ||
@@ -687,7 +689,44 @@ module GemTypes
                  falsy_lasts: filtered.filter_map { |n, f| loc.(n) if f == :falsy },
                  truthy_lasts: filtered.filter_map { |n, f| loc.(n) if f == :truthy },
                  legacy_consts: legacy_consts(node.body), early_nil: early_nil?(node.body), shape: shape(node.parameters),
+                 returns_param: !implicit_nil && filtered.empty? && fixed.empty? && !lasts.empty? && !any_return?(node.body) ? returned_param(lasts, params.compact) : nil,
                  block: block_usage(node, params.compact.find { |x| x[:kind] == "block" }&.dig(:name)) }
+    end
+
+    # The name of the positional parameter every returned expression hands
+    # back unchanged (`x`, `@a = x`, `h[k] = x`, `obj.y = x`), or nil.
+    def returned_param(lasts, params)
+      names = lasts.map { |n| value_param(n) }.uniq
+      return nil unless names.size == 1 && names.first
+
+      p = params.find { |x| x[:name] == names.first }
+      p && %w[req opt].include?(p[:kind]) ? p[:name] : nil
+    end
+
+    # Whether a `return` appears anywhere in the body (an early return is
+    # not among the tail expressions). Blocks and nested defs included, to
+    # stay on the safe side.
+    def any_return?(node)
+      return false unless node.is_a?(Prism::Node)
+      return true if node.is_a?(Prism::ReturnNode)
+
+      node.compact_child_nodes.any? { |c| any_return?(c) }
+    end
+
+    def value_param(n)
+      case n
+      when Prism::LocalVariableReadNode then n.name.to_s
+      when Prism::LocalVariableWriteNode, Prism::InstanceVariableWriteNode, Prism::GlobalVariableWriteNode,
+           Prism::ClassVariableWriteNode, Prism::ConstantWriteNode
+        value_param(n.value)
+      when Prism::ParenthesesNode, Prism::StatementsNode
+        body = n.respond_to?(:body) ? n.body : nil
+        body = body.body if body.is_a?(Prism::StatementsNode)
+        body.is_a?(Array) && body.size == 1 ? value_param(body.first) : (body.is_a?(Prism::Node) ? value_param(body) : nil)
+      when Prism::CallNode
+        args = n.arguments&.arguments
+        n.name.to_s.end_with?("=") && !%w[== != === <= >=].include?(n.name.to_s) && args&.size&.positive? ? value_param(args.last) : nil
+      end
     end
 
     # Every parameter of a def in order, anonymous ones included (`*`, `**`,

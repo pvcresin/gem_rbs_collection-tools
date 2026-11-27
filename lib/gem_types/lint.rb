@@ -116,6 +116,7 @@ module GemTypes
         out.concat(super_block(m, src, d))
         out.concat(arity(m, src))
         out.concat(nil_return(m, src))
+        out.concat(passthrough(m, src))
         if !m.both && m.key.include?(".") && defs.hidden[m.key.sub(".", "#")] == "module_function"
           out << finding(m.key, "module_function: declare it `def self?.#{m.key.split('.').last}` (it is also a private instance method)",
                          module_function_fix(m, d))
@@ -753,6 +754,38 @@ module GemTypes
       # to one of them.
       fix = explicit && rets.size == 1 && m.overloads.size == 1 ? optional_fix(m.file, rets.first) : nil
       [finding(m.key, "the source #{how} but the return type #{rets.uniq.map(&:to_s).join(' / ')} excludes nil", fix)]
+    end
+
+    # A method that returns one of its arguments unchanged, declared with
+    # the same concrete type for that parameter and the return: a type
+    # parameter keeps the caller's (more specific) type. Writers are left
+    # out: `a.b = x` and `a[k] = x` evaluate to x whatever the method returns.
+    def passthrough(m, src)
+      name = src[:returns_param] or return []
+      return [] if m.key.end_with?("=") || m.key.end_with?("#initialize", ".new")
+
+      hits = m.overloads.select do |mt|
+        f = mt.type
+        next false unless f.respond_to?(:required_positionals) && mt.type_params.empty?
+
+        param = (f.required_positionals + f.optional_positionals).find { |x| x.name.to_s == name }
+        param && param.type.to_s == f.return_type.to_s && widens?(param.type)
+      end
+      return [] if hits.empty?
+
+      t = hits.first.type.return_type
+      [finding(m.key, "returns its argument `#{name}` unchanged: `[T < #{t}] (T #{name}) -> T` keeps the caller's type (the declaration says #{t})")]
+    end
+
+    # Types whose subtypes callers really use: generic classes
+    # (Hash[...], Array[...]), interfaces and unions. Not String or bool,
+    # where a type parameter only adds noise.
+    def widens?(t)
+      case t
+      when RBS::Types::ClassInstance then !t.args.empty?
+      when RBS::Types::Interface, RBS::Types::Union then true
+      else false
+      end
     end
 
     # T -> T?, with parentheses around a union, intersection or proc.

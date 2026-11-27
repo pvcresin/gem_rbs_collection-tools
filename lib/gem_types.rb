@@ -21,8 +21,12 @@ module GemTypes
   #   calls:   number of calls observed (runtime sources)
   #   self_returns / block_passthrough: [matching calls, calls] (tracepoint)
   #   block_args: [[types of 1st arg], ...]; block_returns; block_self ("receiver"/"caller")
+  #   return_tuples: element shapes of returned Arrays of small Arrays that
+  #            start with a String/Symbol tag (["+", String, Integer]), when every
+  #            element had that form (tracepoint)
   Evidence = Struct.new(:source, :sigs, :params, :block, :returns, :raises, :calls,
                         :self_returns, :block_passthrough, :block_args, :block_returns, :block_self, :returns_without_block,
+                        :return_tuples,
                         keyword_init: true) do
     def runtime? = !calls.nil?
 

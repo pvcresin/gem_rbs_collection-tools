@@ -38,7 +38,8 @@ module ObserveTypes
   @data = Hash.new do |h, k|
     h[k] = { params: {}, ret: Set.new, block: Set.new, n: 0, shapes: Hash.new { |hh, kk| hh[kk] = Set.new },
              ok: { params: {}, ret: Set.new, block: Set.new, n: 0, ret_nb: Set.new }, kinds: {},
-             self_ret: [0, 0], passthrough: [0, 0], blk_args: [], blk_ret: Set.new, blk_self: Set.new }
+             self_ret: [0, 0], passthrough: [0, 0], blk_args: [], blk_ret: Set.new, blk_self: Set.new,
+             tuples: Set.new, tuples_off: false }
   end
   class << self
     attr_reader :data, :ancestors
@@ -57,6 +58,21 @@ module ObserveTypes
         v.empty? ? "Hash[untyped, untyped]" : "Hash[#{ks}, #{vs}]"
       else type_of_shallow(v)
       end
+    end
+    # The element shapes of an Array of small Arrays that each start with a
+    # String or Symbol tag (Hashdiff's ["+", path, value] changes), as
+    # ['["+", String, Integer]', ...], or nil when v is not such an Array
+    # (an empty Array says nothing). Values after the tag are typed shallowly.
+    def tuple_shapes(v)
+      return nil unless Array === v && CLASS.bind_call(v) == Array && !v.empty?
+
+      v.first(50).map do |e|
+        return nil unless Array === e && e.size.between?(2, 5) && (String === e[0] || Symbol === e[0]) && e[0].size <= 12
+
+        "[#{e[0].inspect}, #{e[1..].map { |x| type_of_shallow(x) }.join(', ')}]"
+      end.uniq
+    rescue StandardError
+      nil
     end
     def type_of_shallow(v)
       # equal?, not ==: DSL objects (e.g. XPath::Expression) override ==.
@@ -272,6 +288,14 @@ ObserveTypes::TP = TracePoint.new(:call, :return, :raise, :rescue, :b_call, :b_r
     d[:ret] << outcome
     unless outcome.start_with?("raise ") || outcome == "throw"
       ok = d[:ok]; ok[:n] += 1; ok[:ret] << outcome; ok[:block] << frame[:blk]
+      # Tuples only when every non-empty Array returned had that form.
+      if !d[:tuples_off] && Array === rv && !rv.empty?
+        if (ts = ObserveTypes.tuple_shapes(rv))
+          d[:tuples].merge(ts) if d[:tuples].size < 16
+        else
+          d[:tuples_off] = true
+        end
+      end
       ok[:ret_nb] << outcome if frame[:blk] == "no"
       frame[:params].each { |l, ts| (ok[:params][l] ||= Set.new).merge(ts) }
       d[:self_ret][1] += 1
@@ -388,7 +412,8 @@ at_exit do
             "raises" => d[:ret].select { |r| r.start_with?("raise ") }.sort,
             "self_returns" => d[:self_ret], "block_passthrough" => d[:passthrough],
             "block_args" => d[:blk_args].map { |s| s ? s.to_a.sort : [] },
-            "block_returns" => d[:blk_ret].to_a.sort, "block_self" => d[:blk_self].to_a.sort }]
+            "block_returns" => d[:blk_ret].to_a.sort, "block_self" => d[:blk_self].to_a.sort,
+            "return_tuples" => d[:tuples_off] ? nil : d[:tuples].to_a.sort }]
   end
   json["__ancestors__"] = ObserveTypes.ancestors
   File.write(out + ".json", JSON.pretty_generate(json))
