@@ -272,18 +272,36 @@ module GemTypes
       dir = File.join(@base, "wt", gem)
       return dir if Dir.exist?(dir)
 
-      branch = "add-#{gem}"
+      # A gem already in the collection is improved on update-<gem>
+      # (the repository's convention), a new one added on add-<gem>.
+      branch = "#{from_version(gem) ? 'update' : 'add'}-#{gem}"
       exists = system("git", "-C", @worktrees, "rev-parse", "--verify", "-q", branch, out: File::NULL, err: File::NULL)
       args = exists ? [dir, branch] : ["-b", branch, dir, @ref]
       @lock.synchronize { system("git", "-C", @worktrees, "worktree", "add", "-q", *args, out: File::NULL, err: File::NULL) }
       Dir.exist?(dir) ? dir : nil
     end
 
-    # Arguments for the gem-rbs-author workflow, for the gems that got a draft.
+    # The newest version directory of gems/<gem> at the worktree ref, or
+    # nil for a gem not in the collection yet.
+    def from_version(gem)
+      return nil unless @worktrees
+
+      @from ||= {}
+      return @from[gem] if @from.key?(gem)
+
+      out = IO.popen(["git", "-C", @worktrees, "ls-tree", "--name-only", @ref, "gems/#{gem}/"], err: File::NULL, &:read).to_s
+      vers = out.split("\n").map { File.basename(_1) }.grep(/\A\d+(\.\d+)*\z/)
+      @from[gem] = vers.max_by { Gem::Version.new(_1) }
+    end
+
+    # Arguments for the gem-rbs-author workflow, for the gems that got a
+    # draft. `from`: the existing version directory to improve (the
+    # workflow's improvement mode).
     def workflow_args(results)
       items = results.select { |r| r.status == "ok" }.map do |r|
-        { gem: r.gem, ver: r.version, ns: r.ns.flat_map { |n| [n, "#{n}::*"] }.join(","),
-          workdir: r.workdir, worktree: r.worktree, test_cmd: r.test_cmd }.compact
+        # Version directories are major.minor (gems/foo/1.2).
+        { gem: r.gem, ver: r.version.to_s[/\A\d+\.\d+/] || r.version, ns: r.ns.flat_map { |n| [n, "#{n}::*"] }.join(","),
+          workdir: r.workdir, worktree: r.worktree, test_cmd: r.test_cmd, from: from_version(r.gem) }.compact
       end
       { tools: ROOT, items: items }
     end

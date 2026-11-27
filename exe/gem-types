@@ -7,7 +7,8 @@
 #   gem-types pick      <gem_rbs_collection dir> [--top 500] [--limit 30] [--min-months N]
 #   gem-types prepare   <gem> [version] [workdir]
 #   gem-types run       <gem> [gem...] [--base DIR] [--jobs N] [--worktrees <gem_rbs_collection> [--ref REF]]
-#                       (prepare..draft for each gem in parallel; worktrees on add-<gem>; workflow args)
+#                       (prepare..draft for each gem in parallel; worktrees on add-<gem>, or update-<gem> with `from` for a gem
+                      already in the collection; workflow args)
 #   gem-types collect   --workdir W --ns Foo --test-cmd "..." [--sources a,b] [--jobs N] [--require foo] [--lib lib] [--tests test,spec]
 #                       (test runs two at a time, --jobs 1 for one; rbs_trace only when tracepoint fails
 #                       unless named in --sources; unchanged static sources are reused; GEM_TYPES_FRESH=1)
