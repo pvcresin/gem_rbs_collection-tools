@@ -312,6 +312,18 @@ class GemTypesTest < Minitest::Test
     end
   end
 
+  def test_next_fix_loads_what_the_gemspec_requires
+    Dir.mktmpdir do |root|
+      FileUtils.mkdir_p(File.join(root, "lib", "zz"))
+      File.write(File.join(root, "lib", "zz", "version.rb"), "module Zz; VERSION = '1'; end\n")
+      File.write(File.join(root, "zz.gemspec"), "require './lib/zz/version'\nrequire 'date'\n")
+      log = "helper.rb:3:in '<top (required)>': uninitialized constant Zz (NameError)"
+      fix = batch.send(:next_fix, log, {}, "x", [], root: root)
+      assert_equal "gemspec_requires", fix[:name]
+      assert_equal "-I#{File.join(root, 'lib')} -rzz/version", fix[:env]["RUBYOPT"]
+    end
+  end
+
   def test_next_fix_maps_required_files_to_gems
     b = batch
     fix = ->(text, gemfile = "", tried = [], root: nil) { b.send(:next_fix, text, {}, "x", tried, root: root, gemfile: gemfile) }

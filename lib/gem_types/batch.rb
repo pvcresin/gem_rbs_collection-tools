@@ -226,6 +226,14 @@ module GemTypes
         rubyopt = [env["RUBYOPT"], "-r#{File.join(LIBEXEC, 'minitest_compat.rb')}"].compact.join(" ")
         cands << { name: "minitest_compat", env: { "RUBYOPT" => rubyopt, "MT_COMPAT" => "1" } }
       end
+      # The gemspec loads part of the gem (`require "./lib/dalli/version"`),
+      # and Bundler evaluates it under the repo's own Gemfile, so the test
+      # helper may use the constant before requiring the gem. env/Gemfile
+      # has no gemspec line: load the same files up front.
+      if root && text.match?(/uninitialized constant \w+ \(NameError\)/) && !(files = gemspec_lib_requires(root)).empty?
+        rubyopt = [env["RUBYOPT"], "-I#{File.join(root, 'lib')}", *files.map { "-r#{_1}" }].compact.join(" ")
+        cands << { name: "gemspec_requires", env: { "RUBYOPT" => rubyopt } }
+      end
       # minitest 6 removed the expectations on Object (obj.must_equal ...).
       cands << { name: "minitest5", gem: "minitest", req: "~> 5.0" } if text.match?(/undefined method [`'](must|wont)_\w+'/)
       in_gemfile = ->(g) { gemfile.match?(/^\s*gem\s+["']#{Regexp.escape(g)}["']/) }
@@ -240,6 +248,14 @@ module GemTypes
       # bundle exec rake with no rake in the Gemfile (kramdown).
       text.scan(/can't find executable ([\w\-]+) for gem ([\w\-]+)/).map(&:last).uniq.each(&add)
       cands.find { |c| !tried.include?(c[:name]) }
+    end
+
+    # Files under lib/ that the gem's gemspec requires (dalli/version for
+    # `require "./lib/dalli/version"`), as require paths.
+    def gemspec_lib_requires(root)
+      Dir[File.join(root, "*.gemspec")].flat_map do |g|
+        File.read(g, encoding: "UTF-8").scrub.scan(/^\s*require(?:_relative)?\s*\(?\s*["'](?:\.\/)?(?:lib\/)?([\w\/-]+)["']/).flatten
+      end.uniq.select { |p| File.file?(File.join(root, "lib", "#{p}.rb")) }
     end
 
     # { name: "compile", pre: "bundle exec rake compile" } when the log
