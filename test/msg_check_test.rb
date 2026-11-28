@@ -143,3 +143,19 @@ class SiblingNotesTest < Minitest::Test
     end
   end
 end
+
+class MsgCheckPackageTest < Minitest::Test
+  def test_package_version_must_be_the_full_version
+    Dir.mktmpdir do |dir|
+      sig = File.join(dir, "gems", "zz", "1.2")
+      FileUtils.mkdir_p(sig)
+      File.write(File.join(sig, "zz.rbs"), "module Zz\nend\n")
+      w = File.join(dir, "w")
+      FileUtils.mkdir_p(w)
+      File.write(File.join(w, "zz-1.2.3.gem"), "")
+      text = "Add RBS for zz 1.2\n\nThe gem does not ship RBS (no sig/ in the 1.2 package).\n\n## Verification\n\n## References\n"
+      errors = GemTypes::MsgCheck.run(text, sig: sig, gem: "zz", workdir: w).select { _1.first == :error }.map(&:last)
+      assert_equal ["\"no sig/ in the 1.2 package\": the package is 1.2.3"], errors
+    end
+  end
+end

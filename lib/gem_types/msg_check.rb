@@ -108,11 +108,17 @@ module GemTypes
     end
 
     def reference_checks(text, workdir)
+      out = []
+      pkg = Dir[File.join(workdir, "*.gem")].map { File.basename(_1, ".gem") }.first.to_s
+      ver = pkg[/-([^-]+)\z/, 1]
+      if ver && (said = text[/no sig\/ in the (\S+) package/, 1]) && said != ver
+        out << [:error, "\"no sig/ in the #{said} package\": the package is #{ver}"]
+      end
       ref = PrText.references(workdir)
-      return [] if ref.empty?
+      return out if ref.empty?
 
       url = ref.sub(/\A- /, "")
-      text.include?(url) ? [] : [[:warn, "References does not link #{url}"]]
+      text.include?(url) ? out : out << [:warn, "References does not link #{url}"]
     end
 
     def read(path) = File.exist?(path) ? (JSON.parse(File.read(path)) rescue nil) : nil
