@@ -517,6 +517,43 @@ module GemTypes
       r
     end
 
+    # Failed tests in a minitest, test-unit or RSpec log: { name => first
+    # line of the message }.
+    def failed_tests(log)
+      text = log.scrub
+      out = {}
+      # minitest: "  1) Failure:\nName [file:line]:\nmessage" (Error: has the exception on the next line)
+      text.scan(/^\s*\d+\) (?:Failure|Error):\n\s*(.+?)(?: \[[^\]]+\])?:\n(.*)$/) { |n, m| out[n.strip] ||= m.strip }
+      # test-unit: "Failure: test_x(Klass)" / "Error: test_x(Klass): Message"
+      text.scan(/^(?:Failure|Error): (test\S*\([\w:]+\))(?::\s*(.*))?$/) { |n, m| out[n] ||= m.to_s.strip }
+      # RSpec: "rspec ./spec/foo_spec.rb:12 # Foo does bar"
+      text.scan(/^rspec (\S+) # (.+)$/) { |loc, d| out["#{d.strip} (#{loc})"] ||= "" }
+      out
+    end
+
+    # Why a test failed only under the checker, from its message: the
+    # artifacts seen so far (puma, dalli, mustermann, google-cloud-env).
+    CHECKER_ARTIFACTS = [
+      [/SystemStackError/, "stack overflow in the checker's wrapper (deep recursion or a huge splat)"],
+      [/exception reentered/, "usually follows a SystemStackError earlier in the run: rerun the test alone under `gem-types check`"],
+      [/deprecated/i, "a warning built from __callee__ or caller frames, which the wrapper changes"],
+      [/caller|extract_name|for nil/, "code that reads caller frames, which start at the wrapper"],
+      [/to be <=|in_delta|within|timed? ?out|Timeout/i, "timing: the checker slows calls down"],
+      [/parameters|arity/i, "Method#parameters/arity of a wrapped method"]
+    ].freeze
+
+    # Tests that fail only in the checked log, with a guess at the cause.
+    def checked_only_failures(plain_log, checked_log)
+      plain = failed_tests(File.read(plain_log, encoding: "UTF-8"))
+      checked = failed_tests(File.read(checked_log, encoding: "UTF-8"))
+      checked.reject { |n, _| plain.key?(n) }.map do |name, msg|
+        why = CHECKER_ARTIFACTS.find { |re, _| msg.match?(re) || name.match?(re) }&.last
+        [name, msg, why]
+      end
+    rescue Errno::ENOENT
+      []
+    end
+
     # Declared methods the run never called (coverage_report.rb per file).
     # Private ones end in " (private)" when private: true, else are left out.
     def uncalled(sig, calls, private: false)

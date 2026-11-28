@@ -224,6 +224,11 @@ when "verify"
   unless incomplete.empty?
     puts "CHECKED RUN INCOMPLETE: #{incomplete.join('; ')}."
     puts "  The runtime checks did not cover the suite: fix the run (see #{r[:logs].last}) before trusting these numbers."
+    only = GemTypes::Verify.checked_only_failures(*r[:logs])
+    unless only.empty?
+      puts "  Fail only with checking (#{only.size}); confirm each artifact, e.g. rerun it alone, and name the cause in the PR:"
+      only.first(30).each { |n, m, why| puts "    #{n[0, 110]}", "      #{m[0, 110]}#{why ? "  => #{why}" : ''}" }
+    end
   end
   r[:errors].first(20).each { |e| puts "  #{e[0, 220]}" }
   puts "  errors: #{r[:errors_file]}" unless r[:errors].empty?
