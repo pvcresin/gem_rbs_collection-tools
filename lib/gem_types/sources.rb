@@ -878,17 +878,34 @@ module GemTypes
           end
         when Prism::InstanceVariableWriteNode, Prism::InstanceVariableOrWriteNode, Prism::LocalVariableWriteNode,
              Prism::ClassVariableWriteNode, Prism::ConstantWriteNode
-          u[:stored] = true if blk && n.value.is_a?(Prism::LocalVariableReadNode) && n.value.name == blk
+          u[:stored] = true if blk && block_value?(n.value, blk)
         when Prism::HashNode, Prism::ArrayNode, Prism::KeywordHashNode
           elems = n.respond_to?(:elements) ? n.elements : []
           vals = elems.map { |e| e.respond_to?(:value) ? e.value : e }
-          u[:stored] = true if blk && vals.any? { |v| v.is_a?(Prism::LocalVariableReadNode) && v.name == blk }
+          u[:stored] = true if blk && vals.any? { |v| block_value?(v, blk) }
         end
         stack.concat(n.compact_child_nodes)
       end
       u
     end
 
+# Whether node evaluates to the block itself: `blk`, `callable || blk`
+    # (websocket-driver add_listener), `(x.nil? ? blk : x)` (typhoeus
+    # Expectation#and_return).
+    def block_value?(node, blk)
+      case node
+      when Prism::LocalVariableReadNode then node.name == blk
+      when Prism::OrNode, Prism::AndNode then block_value?(node.left, blk) || block_value?(node.right, blk)
+      when Prism::ParenthesesNode then block_value?(node.body, blk)
+      when Prism::StatementsNode then block_value?(node.body.last, blk)
+      when Prism::ElseNode then block_value?(node.statements, blk)
+      when Prism::IfNode, Prism::UnlessNode
+        other = %i[subsequent else_clause consequent].find { node.respond_to?(_1) }
+        block_value?(node.statements, blk) || block_value?(other && node.public_send(other), blk)
+      else false
+      end
+    end
+    
     # The self a block passed to `call` runs with, as an RBS type for its
     # `[self: X]`: `self` for instance_eval/class_eval on the receiver,
     # `instance` for define_method, `Foo` for `Foo.new.instance_eval`,

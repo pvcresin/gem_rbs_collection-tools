@@ -198,9 +198,14 @@ class GemTypesTest < Minitest::Test
           delegate :on, :run, to: :@r
           def trait(&blk) = T.new(&blk)
         end
+        class V
+          def add(c = nil, &blk) = (l = c || blk; @ls << l)
+          def ret(r = nil, &blk) = (x = (r.nil? ? blk : r); @rs.push(*x))
+          def flag(&blk) = (x = blk ? 1 : 2; @a.each(&blk))
+        end
       RUBY
       keys = GemTypes::DefIndex.new([dir]).raw_block_keys
-      assert_equal %w[P#on P#trait R#before R#on T#initialize], keys.sort
+      assert_equal %w[P#on P#trait R#before R#on T#initialize V#add V#ret], keys.sort
     end
   end
 
