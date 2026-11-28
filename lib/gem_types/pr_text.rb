@@ -84,13 +84,24 @@ module GemTypes
     def references(workdir)
       repo = File.join(workdir, "repo")
       return "" unless File.directory?(File.join(repo, ".git"))
-
+    
       url = `git -C #{repo.shellescape} remote get-url origin 2>/dev/null`.strip.sub(/\.git\z/, "")
       return "" unless url.start_with?("https://")
-
-      tag = `git -C #{repo.shellescape} describe --tags --exact-match 2>/dev/null`.strip
+    
+      pkg = Dir[File.join(workdir, "*.gem")].map { File.basename(_1, ".gem") }.first.to_s
+      gem, ver = pkg.match(/\A(.+)-([^-]+)\z/)&.captures
+      # The release tag of this gem: a monorepo tags each gem
+      # (google-cloud-core/v1.9.1), and a checkout may sit on another gem's
+      # tag (describe gave google-cloud-data_catalog-lineage/v1.3.1).
+      cands = ver ? ["v#{ver}", ver, "#{gem}/v#{ver}", "#{gem}-v#{ver}", "#{gem}-#{ver}"] : []
+      here = `git -C #{repo.shellescape} tag --points-at HEAD 2>/dev/null`.split
+      tag = cands.find { here.include?(_1) }
+      tag ||= cands.find { !`git -C #{repo.shellescape} ls-remote --tags origin refs/tags/#{_1.shellescape} 2>/dev/null`.strip.empty? } unless cands.empty?
+      tag ||= `git -C #{repo.shellescape} describe --tags --exact-match 2>/dev/null`.strip
       ref = tag.empty? ? `git -C #{repo.shellescape} rev-parse HEAD 2>/dev/null`.strip : tag
-      "- #{url}/tree/#{ref}"
+      sub = File.exist?(File.join(workdir, "repo_dir")) ? File.read(File.join(workdir, "repo_dir")).strip : ""
+      sub = sub.delete_prefix(File.expand_path(repo)).delete_prefix("/")
+      "- #{url}/tree/#{ref}#{sub.empty? ? "" : "/#{sub}"}"
     end
 
     # Ruby's callbacks, not API users call.
