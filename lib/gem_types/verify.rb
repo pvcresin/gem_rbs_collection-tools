@@ -902,7 +902,15 @@ module GemTypes
         versions = Dir[File.join(gems_dir, dep.name, "*")].select { |d| File.directory?(d) && File.basename(d).match?(/\A\d/) }
         # A default gem typed in rbs's stdlib (net-http, uri, ...), as
         # `rbs collection` resolves it.
-        next(stdlib?(dep.name) ? [:l, dep.name] : nil) if versions.empty?
+        # Else the sig/ the installed gem ships, which `rbs collection`
+        # also loads (ffi's own RBS, needed by ethon's FFI-typed modules:
+        # without it rbs/test leaves them unhooked without a word).
+        if versions.empty?
+          next [:l, dep.name] if stdlib?(dep.name)
+
+          shipped = gem_sig_dir(File.join(File.dirname(config.out), "gemhome"), dep)
+          next(shipped ? [:s, shipped] : nil)
+        end
 
         sorted = versions.sort_by { |d| Gem::Version.new(File.basename(d)) }
         best = sorted.reverse.find { |d| dep.requirement.satisfied_by?(Gem::Version.new("#{File.basename(d)}.0")) } || sorted.last
@@ -912,6 +920,17 @@ module GemTypes
       end
     rescue StandardError
       []
+    end
+
+    # The sig/ directory of the newest installed version of dep in gemhome
+    # that satisfies it (gems/ffi-1.17.4-x86_64-linux-gnu/sig), or nil.
+    def gem_sig_dir(gemhome, dep)
+      re = /\A#{Regexp.escape(dep.name)}-(\d[^-]*)(-.+)?\z/
+      Dir[File.join(gemhome, "gems", "#{dep.name}-*", "sig")].filter_map do |d|
+        m = File.basename(File.dirname(d)).match(re) or next
+        v = Gem::Version.new(m[1]) rescue next
+        [v, d] if dep.requirement.satisfied_by?(v)
+      end.max_by(&:first)&.last
     end
 
     def dep_sig_args(config, sig)

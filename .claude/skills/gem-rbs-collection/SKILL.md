@@ -286,7 +286,8 @@ itself must validate with its dependencies.
   major (faraday_middleware on Faraday 1.x, gems/faraday is 2.x): declare
   the few old-only classes it needs (Faraday::Response::Middleware) in
   its own file and say so. `verify`/`live` load the dependency's RBS from
-  the collection automatically.
+  the collection automatically, or else the sig/ the installed dependency
+  ships (ffi for ethon), as `rbs collection` does.
 - Generic type arguments are invariant. A subclass is fine as such, but
   `Faraday::Utils::Headers < Hash[Symbol | String, untyped]` does not
   match a parameter declared `Hash[String, String]`, because the type

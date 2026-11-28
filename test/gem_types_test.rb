@@ -939,4 +939,13 @@ end
       assert_equal %w[M#to_s Base#greet], out.split("\n")
     end
   end
+def test_gem_sig_dir_picks_the_newest_matching_shipped_sig
+  Dir.mktmpdir do |home|
+    %w[zzffi-0.9.0 zzffi-1.2.0-x86_64-linux-gnu zzffi-1.1.0 zzffi-compiler-9.0.0].each { FileUtils.mkdir_p(File.join(home, "gems", _1, "sig")) }
+    FileUtils.mkdir_p(File.join(home, "gems", "zzffi-2.0.0"))
+    got = GemTypes::Verify.gem_sig_dir(home, Gem::Dependency.new("zzffi", ">= 1.0"))
+    assert_equal File.join(home, "gems", "zzffi-1.2.0-x86_64-linux-gnu", "sig"), got
+    assert_nil GemTypes::Verify.gem_sig_dir(home, Gem::Dependency.new("zzffi", ">= 3"))
+  end
+end
 end
