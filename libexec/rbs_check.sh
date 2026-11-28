@@ -38,8 +38,17 @@ for s in "${SIGS[@]}"; do
   fi
 done
 for l in "${LIBS[@]}"; do opt="$opt -r $l"; done
-# rbs from the default gem environment, even when GEM_HOME points elsewhere
-RBSLIB=${RBS_LIB:-$(env -u GEM_HOME -u GEM_PATH -u BUNDLE_GEMFILE ruby -e 'print Gem::Specification.find_by_name("rbs").full_gem_path')/lib}
+# rbs from the default gem environment, even when GEM_HOME points elsewhere,
+# unless the gem's environment has a newer one: under another Ruby (dalli's
+# tests on 4.0.6) the default is that Ruby's bundled rbs 3.x, which lacks
+# what rbs/test needs here.
+rbs_path='s = Gem::Specification.find_all_by_name("rbs").max_by(&:version); print s ? "#{s.version} #{s.full_gem_path}" : ""'
+if [ -z "${RBS_LIB:-}" ]; then
+  RBSLIB=$( { env -u GEM_HOME -u GEM_PATH -u BUNDLE_GEMFILE ruby -e "$rbs_path"; echo; ruby -e "$rbs_path"; echo; } 2>/dev/null |
+    ruby -e 'b = STDIN.read.lines.map(&:split).reject(&:empty?).max_by { Gem::Version.new(_1[0]) }; print b ? b[1] : ""')/lib
+else
+  RBSLIB=$RBS_LIB
+fi
 export RBS_TEST_TARGET="$TARGETS" RBS_TEST_OPT="$opt" RBS_TEST_LOGLEVEL=error
 [ -n "$SKIP" ] && export RBS_TEST_SKIP="$SKIP"
 [ -n "$DBL" ] && export RBS_TEST_DOUBLE_SUITE="$DBL"
