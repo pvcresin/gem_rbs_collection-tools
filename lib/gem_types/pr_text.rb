@@ -96,11 +96,17 @@ module GemTypes
       cands = ver ? ["v#{ver}", ver, "#{gem}/v#{ver}", "#{gem}-v#{ver}", "#{gem}-#{ver}"] : []
       here = `git -C #{repo.shellescape} tag --points-at HEAD 2>/dev/null`.split
       tag = cands.find { here.include?(_1) }
-      tag ||= cands.find { !`git -C #{repo.shellescape} ls-remote --tags origin refs/tags/#{_1.shellescape} 2>/dev/null`.strip.empty? } unless cands.empty?
-      tag ||= `git -C #{repo.shellescape} describe --tags --exact-match 2>/dev/null`.strip
-      ref = tag.empty? ? `git -C #{repo.shellescape} rev-parse HEAD 2>/dev/null`.strip : tag
       sub = File.exist?(File.join(workdir, "repo_dir")) ? File.read(File.join(workdir, "repo_dir")).strip : ""
       sub = sub.delete_prefix(File.expand_path(repo)).delete_prefix("/")
+      # In a monorepo a bare "1.4.1" tag may be something else (aws-sdk-ruby's
+      # 1.4.1 is an old SDK release, not aws-eventstream 1.4.1): only
+      # gem-prefixed tags count there, unless a bare one is on HEAD. Without
+      # a tag, the checkout's commit (the release commit) is linked.
+      remote = sub.empty? ? cands : cands.select { _1.start_with?("#{gem}/", "#{gem}-") }
+      tag ||= remote.find { !`git -C #{repo.shellescape} ls-remote --tags origin refs/tags/#{_1.shellescape} 2>/dev/null`.strip.empty? }
+      tag ||= `git -C #{repo.shellescape} describe --tags --exact-match 2>/dev/null`.strip if sub.empty?
+      tag ||= ""
+      ref = tag.empty? ? `git -C #{repo.shellescape} rev-parse HEAD 2>/dev/null`.strip : tag
       "- #{url}/tree/#{ref}#{sub.empty? ? "" : "/#{sub}"}"
     end
 
