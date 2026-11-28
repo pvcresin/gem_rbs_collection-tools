@@ -316,6 +316,8 @@ class GemTypesTest < Minitest::Test
     # a gem already in the Gemfile is not rewritten
     assert_nil fix.("cannot load such file -- minitest/pride", %(gem "minitest", "~> 5.0"\n), %w[gem-minitest-pride gem-minitest_pride])
     assert_equal "rspec-its", fix.("cannot load such file -- rspec/its")[:gem]
+    # a Rakefile that loads Rake::ExtensionTask (puma)
+    assert_equal "rake-compiler", fix.("cannot load such file -- rake/extensiontask")[:gem]
     assert_equal "foo-bar", fix.("cannot load such file -- foo/bar")[:gem]
     assert_equal "foo_bar", fix.("cannot load such file -- foo/bar", "", ["gem-foo-bar"])[:gem]
     assert_equal "foo", fix.("cannot load such file -- foo/bar", "", %w[gem-foo-bar gem-foo_bar])[:gem]

@@ -28,11 +28,16 @@ class EnvGemfileTest < Minitest::Test
           gem "jar-dependencies"
         end
         gem "rspec", "~> 3.7"
+        gem "changelogd", git: "https://github.com/net-ssh/changelogd.git", tag: "v1", group: :development
+        gem "localgem", path: "../localgem"
       RUBY
       out, st = Open3.capture2e(RbConfig.ruby, SCRIPT, File.join(dir, "foo-1.0.gem"), repo)
       assert st.success?, out
       assert_includes out, %(gem "rspec", "~> 3.7")
       refute_match(/jruby|jar-dependencies/, out)
+      # git sources are kept (the gem may not be on rubygems.org); path: is dropped.
+      assert_includes out, %(gem "changelogd", git: "https://github.com/net-ssh/changelogd.git", tag: "v1")
+      assert_includes out, %(gem "localgem"\n)
     end
   end
 end

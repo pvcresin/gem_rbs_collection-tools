@@ -25,7 +25,7 @@ module GemTypes
       "rspec/its" => "rspec-its", "rspec/collection_matchers" => "rspec-collection_matchers",
       "mocha/api" => "mocha", "mocha/minitest" => "mocha", "mocha/setup" => "mocha", "webmock/rspec" => "webmock",
       "webmock/minitest" => "webmock", "shoulda/context" => "shoulda-context", "test/unit/rr" => "test-unit-rr",
-      "racc/parser" => "racc",
+      "racc/parser" => "racc", "rake/extensiontask" => "rake-compiler", "rake/javaextensiontask" => "rake-compiler",
       # the suite's own helpers, not gems
       "spec_helper" => nil, "test_helper" => nil, "helper" => nil
     }.freeze

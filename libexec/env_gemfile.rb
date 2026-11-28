@@ -8,7 +8,9 @@
 #   The tests load the library from repo/lib (-Ilib).
 # - Gems from the repo's Gemfile / gems.rb are added (test runners and
 #   helpers often live only there), minus linters, debuggers and CI tools.
-#   Options such as path:/git: are dropped; prune lines if bundle fails.
+#   path: options are dropped. git:/github: sources (with tag:/branch:/ref:)
+#   are kept: such a gem may not be on rubygems.org at all (net-ssh's
+#   Rakefile requires changelogd, a git gem). Prune lines if bundle fails.
 # - rbs, rbs-trace and lumitrace are added for gem-types.
 require "rubygems/package"
 
@@ -65,7 +67,12 @@ if gemfile
     # Conditional versions (RUBY_VERSION < '1.9' ? '~> 10.5' : '>= 10.5')
     # cannot be read without evaluating Ruby: take the gem unconstrained.
     versions = m[2].match?(/RUBY_VERSION|RUBY_ENGINE|\?|\bif\b|\bunless\b/) ? [] : m[2].scan(/["']([~<>=! ]*\d[^"']*)["']/).flatten
-    extra << ["gem #{name.dump}", *versions.map(&:dump)].join(", ")
+    source = %w[git github tag branch ref].filter_map do |k|
+      v = m[2][/\b#{k}:\s*(["'])([^"']+)/, 2] || m[2][/["':]#{k}["']?\s*=>\s*(["'])([^"']+)/, 2]
+      "#{k}: #{v.dump}" if v
+    end
+    source = [] unless source.any? { _1.start_with?("git:", "github:") }
+    extra << ["gem #{name.dump}", *versions.map(&:dump), *source].join(", ")
     names << name
   end
   unless extra.empty?
