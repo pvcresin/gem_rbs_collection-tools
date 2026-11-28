@@ -93,6 +93,9 @@ module GemTypes
       return r unless step.("prepare", sh({}, "#{File.join(LIBEXEC, 'prepare_gem.sh').shellescape} #{gem.shellescape} '' #{w.shellescape}",
                                           @base, File.join(logs, "prepare.log")) && Dir.exist?(File.join(w, "repo")),
                             "no upstream checkout (see run/prepare.log)")
+      if (why = upstream_rbs(w))
+        return r unless step.("upstream", false, why)
+      end
 
       env = { "BUNDLE_GEMFILE" => File.join(w, "env", "Gemfile"), "GEM_HOME" => File.join(w, "gemhome"),
               "GEM_PATH" => File.join(w, "gemhome") }
@@ -403,6 +406,24 @@ def sibling_notes(r, results)
     "do not refer to #{sib.size == 1 ? "its" : "their"} types; use untyped or an interface where such an object leaks out."
 rescue StandardError
   nil
+end
+
+# Why the gem's RBS belongs upstream, or nil: its repository keeps a
+# sig/ that the package leaves out (aws-sigv4), or most gems of its
+# monorepo do (aws-sdk-ruby: 434 of 443; #1195 and #1249 were closed for
+# this). Contribute the signatures to that repository instead.
+def upstream_rbs(w)
+  root = gem_root(w)
+  return "the upstream repository has #{File.join(File.basename(root), "sig")}/ (not in the package): add RBS there" if Dir.exist?(File.join(root, "sig"))
+
+  repo = File.join(w, "repo")
+  return nil if File.expand_path(root) == File.expand_path(repo)
+
+  siblings = Dir[File.join(File.dirname(root), "*", "*.gemspec")].map { File.dirname(_1) }.uniq
+  with_sig = siblings.count { Dir.exist?(File.join(_1, "sig")) }
+  return nil unless siblings.size >= 3 && with_sig * 2 > siblings.size
+
+  "#{with_sig} of #{siblings.size} gems in its monorepo keep RBS in sig/: add RBS there"
 end
 
     # The gem's root in the checkout: repo/, or repo/<subdir> for a gem in

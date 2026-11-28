@@ -287,6 +287,11 @@ itself must validate with its dependencies.
 - Put the RBS under the gem that ships the code: database_cleaner only
   requires the adapter, the API is in database_cleaner-core
   (gems/database_cleaner-core). Check the package's lib/, not the repo.
+- A gem whose upstream repository keeps RBS in sig/ (left out of the
+  package), or whose monorepo does for most gems (aws-sdk-ruby: 434 of
+  443): the signatures belong upstream; #1195 (aws-sigv4) and #1249
+  (aws-eventstream) were closed for this. `gem-types run` stops at
+  "upstream" for them.
 - A gem on an older major of a dependency the collection types for a newer
   major (faraday_middleware on Faraday 1.x, gems/faraday is 2.x): declare
   the few old-only classes it needs (Faraday::Response::Middleware) in

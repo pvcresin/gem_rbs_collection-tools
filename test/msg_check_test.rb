@@ -159,3 +159,25 @@ class MsgCheckPackageTest < Minitest::Test
     end
   end
 end
+
+class UpstreamRbsTest < Minitest::Test
+  def test_upstream_sig_dirs_stop_the_run
+    Dir.mktmpdir do |w|
+      b = GemTypes::Batch.new([], base: w)
+      FileUtils.mkdir_p(File.join(w, "repo", "lib"))
+      assert_nil b.send(:upstream_rbs, w)
+      FileUtils.mkdir_p(File.join(w, "repo", "sig"))
+      assert_match(/has repo\/sig\//, b.send(:upstream_rbs, w))
+    end
+    Dir.mktmpdir do |w|
+      b = GemTypes::Batch.new([], base: w)
+      %w[a b c d].each do |g|
+        FileUtils.mkdir_p(File.join(w, "repo", "gems", g))
+        File.write(File.join(w, "repo", "gems", g, "#{g}.gemspec"), "")
+        FileUtils.mkdir_p(File.join(w, "repo", "gems", g, "sig")) unless g == "a"
+      end
+      File.write(File.join(w, "repo_dir"), File.join(w, "repo", "gems", "a"))
+      assert_equal "3 of 4 gems in its monorepo keep RBS in sig/: add RBS there", b.send(:upstream_rbs, w)
+    end
+  end
+end
