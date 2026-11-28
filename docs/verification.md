@@ -137,7 +137,11 @@ public methods do not find them.
 rbs/test installs its hooks when a class body ends, so methods a gem adds
 to an existing class without reopening it (a top-level `def IPAddress`,
 `String.class_eval`, `define_method`) were never checked. `rbs_check.sh`
-now also installs the hooks when such a method is added to a target class.
+now also installs the hooks when such a method is added to a target class,
+and after each top-level `require` for declared classes that have no class
+body (defined by a C extension, such as nio4r's `NIO::Selector`, or by
+`Foo = Class.new { ... }`). Before, every check on those passed without
+checking anything.
 
 Runtime checks only hook methods a class defines itself: a declaration that
 overrides an inherited method's type (e.g. `map` on a Hash subclass whose

@@ -185,6 +185,7 @@ if defined?(RBS::Test::Hook)
     # Foo is still being defined: rbs/test installs Foo's hooks when Foo's
     # body ends, so only act when that body is not open.
     open_bodies = []
+    ended = {}.compare_by_identity
     TracePoint.new(:class, :end) do |tp|
       o = tp.self
       if tp.event == :class
@@ -192,6 +193,7 @@ if defined?(RBS::Test::Hook)
         next
       end
       open_bodies.pop
+      ended[o] = true
       next unless (o.singleton_class? rescue false)
 
       k = (o.attached_object rescue nil)
@@ -222,6 +224,40 @@ if defined?(RBS::Test::Hook)
       next unless klass.is_a?(Module) && declared.(name)
 
       watch.(klass)
+    end
+    # Classes with no class body - defined by a C extension
+    # (rb_define_class_under) or by `Foo = Class.new { ... }` - end no body,
+    # so rbs/test never hooked them and every check on them passed without
+    # checking anything (nio4r's NIO::Selector under the C backend). After
+    # each top-level require, install for declared targets that exist now and
+    # never had a body end. (require_relative cannot be wrapped: it resolves
+    # paths from its caller. Its files are covered by the require that loaded
+    # them.)
+    pending = nil
+    bodiless = lambda do
+      pending ||= tester.env.class_decls.keys.map { |t| t.to_s.delete_prefix("::") }.select { |n| target.(n) }
+      pending.reject! do |n|
+        klass = (Object.const_get(n) rescue nil)
+        next false unless is_module.bind_call(klass, Module)
+        next true if ended[klass]
+
+        install.(klass)
+        true
+      end
+    end
+    depth = 0
+    Kernel.module_eval do
+      alias_method :__gem_types_bodiless_require, :require
+      define_method(:require) do |name|
+        depth += 1
+        begin
+          __gem_types_bodiless_require(name)
+        ensure
+          depth -= 1
+          (bodiless.() rescue nil) if depth.zero?
+        end
+      end
+      private :require
     end
     # (A Module#const_added watcher for Foo = Struct.new classes was tried:
     # prepending const_added on Module broke thor's spec loading. A

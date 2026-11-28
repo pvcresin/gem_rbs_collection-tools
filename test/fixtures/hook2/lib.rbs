@@ -10,3 +10,6 @@ class Cache
   def self.load: () -> bot
   attr_accessor version: bot
 end
+class Gen
+  def size: () -> bot
+end
