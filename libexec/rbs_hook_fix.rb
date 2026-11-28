@@ -186,6 +186,7 @@ if defined?(RBS::Test::Hook)
     # body ends, so only act when that body is not open.
     open_bodies = []
     ended = {}.compare_by_identity
+    watch = nil # assigned below; the TracePoint block needs the variable
     TracePoint.new(:class, :end) do |tp|
       o = tp.self
       if tp.event == :class
@@ -194,7 +195,15 @@ if defined?(RBS::Test::Hook)
       end
       open_bodies.pop
       ended[o] = true
-      next unless (o.singleton_class? rescue false)
+      # A target reopened after its first body ended (mini_portile2 defines
+      # MiniPortile in version.rb, then initialize in mini_portile.rb):
+      # rbs/test hooked it at that first end, and the later def replaced
+      # the hook. Watch it from now on so later definitions are hooked.
+      unless (o.singleton_class? rescue true)
+        n = mod_name.(o)
+        watch.(o) if target.(n) && declared.(n)
+        next
+      end
 
       k = (o.attached_object rescue nil)
       n = mod_name.(k)
@@ -208,13 +217,22 @@ if defined?(RBS::Test::Hook)
 
       watched[klass] = true
       watcher = Module.new do
+        # A redefinition replaces rbs/test's hook, but its tester still lists
+        # the name as hooked (it hooks initialize even before the class
+        # defines one): forget the name so install hooks it again.
         define_method(:method_added) do |m|
           super(m)
-          install.(klass) if equal?(klass)
+          if equal?(klass) && !Thread.current[:gem_types_installing]
+            (tester.send(:instance_testers)[klass]&.last&.delete(m)) rescue nil
+            install.(klass)
+          end
         end
         define_method(:singleton_method_added) do |m|
           super(m)
-          install.(klass) if equal?(klass)
+          if equal?(klass) && !Thread.current[:gem_types_installing]
+            (tester.send(:singleton_testers)[klass]&.last&.delete(m)) rescue nil
+            install.(klass)
+          end
         end
       end
       klass.singleton_class.prepend(watcher)

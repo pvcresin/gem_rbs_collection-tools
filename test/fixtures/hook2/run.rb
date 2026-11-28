@@ -4,3 +4,4 @@ p Reg::Types.call_secret
 $LOAD_PATH.unshift(__dir__)
 require "lib2"
 p Gen.new.size
+p Reopen.new(1).get

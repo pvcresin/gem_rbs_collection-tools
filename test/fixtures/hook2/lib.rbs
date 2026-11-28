@@ -13,3 +13,7 @@ end
 class Gen
   def size: () -> bot
 end
+class Reopen
+  def initialize: (String x) -> void
+  def get: () -> bot
+end
