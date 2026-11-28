@@ -6,7 +6,7 @@
 #
 #   gem-types pick      <gem_rbs_collection dir> [--top 500] [--limit 30] [--min-months N]
 #   gem-types prepare   <gem> [version] [workdir]
-#   gem-types run       <gem> [gem...] [--base DIR] [--jobs N] [--worktrees <gem_rbs_collection> [--ref REF]]
+#   gem-types run       <gem> [gem...] [--base DIR] [--jobs N] [--worktrees <gem_rbs_collection> [--ref REF]] [--path DIR,...]
 #                       (prepare..draft for each gem in parallel; worktrees on add-<gem>, or update-<gem> with `from` for a gem
 #                       already in the collection; workflow args)
 #   gem-types collect   --workdir W --ns Foo --test-cmd "..." [--sources a,b] [--jobs N] [--require foo] [--lib lib] [--tests test,spec]
@@ -123,14 +123,16 @@ when "run"
   jobs = 2
   worktrees = nil
   ref = "HEAD"
+  path = []
   OptionParser.new do |o|
     o.on("--base DIR") { base = _1 }
     o.on("--jobs N", Integer) { jobs = _1 }
     o.on("--worktrees REPO") { worktrees = _1 }
     o.on("--ref REF") { ref = _1 }
+    o.on("--path LIST", Array) { path = _1 }
   end.parse!(ARGV)
   abort "usage: gem-types run <gem> [gem...] [--base DIR] [--jobs N] [--worktrees <gem_rbs_collection>] [--ref REF]" if ARGV.empty?
-  batch = GemTypes::Batch.new(ARGV.dup, base: base, jobs: jobs, worktrees: worktrees, ref: ref)
+  batch = GemTypes::Batch.new(ARGV.dup, base: base, jobs: jobs, worktrees: worktrees, ref: ref, path: path)
   results = batch.run
   table = batch.summary(results)
   # A later run into the same base (a gem added to the batch) adds to the

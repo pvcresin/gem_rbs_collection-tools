@@ -36,7 +36,11 @@ module GemTypes
     # worktrees: a gem_rbs_collection checkout; for each gem that gets a
     # draft, a worktree on branch add-<gem> is created next to the workdirs
     # (base/wt/<gem>) from `ref`.
-    def initialize(gems, base:, jobs: 2, exe: File.join(ROOT, "exe", "gem-types"), worktrees: nil, ref: "HEAD")
+    # path: directories put before PATH for the gem's own commands (another
+    # Ruby, a newer memcached for dalli); saved in gem-types.json, so later
+    # verify/live/repair runs use them too.
+    def initialize(gems, base:, jobs: 2, exe: File.join(ROOT, "exe", "gem-types"), worktrees: nil, ref: "HEAD", path: [])
+      @path = path
       @worktrees = worktrees && File.expand_path(worktrees)
       @ref = ref
       @gems = gems
@@ -92,6 +96,7 @@ module GemTypes
 
       env = { "BUNDLE_GEMFILE" => File.join(w, "env", "Gemfile"), "GEM_HOME" => File.join(w, "gemhome"),
               "GEM_PATH" => File.join(w, "gemhome") }
+      env["PATH"] = [*@path.map { File.expand_path(_1) }, ENV["PATH"]].join(File::PATH_SEPARATOR) unless @path.empty?
       return r unless step.("install", install(w, env, logs),
                             "bundle install failed (see run/install.log; edit env/Gemfile and rerun)")
 
@@ -101,6 +106,12 @@ module GemTypes
       r.test_cmd = test_cmd
       r.version = prepared_version(gem, w)
       counts, env = run_tests_with_fixes(w, env, test_cmd, logs)
+      # Keep --path for collect and the later verify/live/repair runs.
+      if env.key?("PATH")
+        cfg_file = File.join(w, "gem-types.json")
+        saved = File.exist?(cfg_file) ? JSON.parse(File.read(cfg_file)) : {}
+        File.write(cfg_file, JSON.pretty_generate(saved.merge("repo" => gem_root(w), "env" => env, "test_cmd" => test_cmd)))
+      end
       r.tests = "#{counts[:total]} #{counts[:unit]}, #{counts[:failed]} failing"
       return r unless step.("tests", counts[:total].positive?, "the tests did not run (see run/tests.log)")
       return r unless step.("tests", counts[:failed] * 2 <= counts[:total], "most tests fail without tooling (#{r.tests})")
@@ -368,11 +379,31 @@ module GemTypes
       items = results.select { |r| r.status == "ok" }.map do |r|
         # Version directories are major.minor (gems/foo/1.2).
         { gem: r.gem, ver: r.version.to_s[/\A\d+\.\d+/] || r.version, ns: r.ns.flat_map { |n| [n, "#{n}::*"] }.join(","),
-          workdir: r.workdir, worktree: r.worktree, test_cmd: r.test_cmd, from: from_version(r.gem) }.compact
+          workdir: r.workdir, worktree: r.worktree, test_cmd: r.test_cmd, from: from_version(r.gem),
+          notes: sibling_notes(r, results) }.compact
       end
       { tools: ROOT, items: items }
     end
-    public :workflow_args
+public :workflow_args
+
+# Notes for the author about the other gems of this batch: a runtime
+# dependency that has no RBS in the collection yet gets its RBS in a
+# separate PR, so this one must not name its types (each PR passes CI
+# alone: typhoeus must not refer to Ethon, google-cloud-core not to
+# Google::Cloud::Env).
+def sibling_notes(r, results)
+  pkg = Dir[File.join(r.workdir, "#{r.gem}-*.gem")].first or return nil
+  require "rubygems/package"
+  deps = Gem::Package.new(pkg).spec.runtime_dependencies.map(&:name)
+  others = results.map(&:gem) - [r.gem]
+  sib = (deps & others).reject { |d| from_version(d) }
+  return nil if sib.empty?
+
+  "#{sib.join(", ")} #{sib.size == 1 ? "has" : "have"} no RBS in the collection yet (a separate PR in this batch): " \
+    "do not refer to #{sib.size == 1 ? "its" : "their"} types; use untyped or an interface where such an object leaks out."
+rescue StandardError
+  nil
+end
 
     # The gem's root in the checkout: repo/, or repo/<subdir> for a gem in
     # a monorepo (prepare_gem.sh writes repo_dir).

@@ -115,3 +115,31 @@ class ShipTest < Minitest::Test
     end
   end
 end
+
+class SiblingNotesTest < Minitest::Test
+  def build_gem(dir, name, deps)
+    spec = Gem::Specification.new do |s|
+      s.name = name
+      s.version = "1.0.0"
+      s.summary = "x"
+      s.authors = ["x"]
+      s.files = []
+      deps.each { s.add_runtime_dependency(_1) }
+    end
+    Dir.chdir(dir) { Gem::Package.build(spec) }
+  end
+
+  def test_runtime_dependencies_in_the_same_batch_get_a_note
+    Dir.mktmpdir do |base|
+      %w[zzhttp zzcurl].each { FileUtils.mkdir_p(File.join(base, _1)) }
+      require "rubygems/package"
+      Gem::DefaultUserInteraction.ui = Gem::SilentUI.new
+      build_gem(File.join(base, "zzhttp"), "zzhttp", %w[zzcurl json])
+      build_gem(File.join(base, "zzcurl"), "zzcurl", [])
+      b = GemTypes::Batch.new(%w[zzhttp zzcurl], base: base)
+      rs = %w[zzhttp zzcurl].map { GemTypes::Batch::Result.new(gem: _1, workdir: File.join(base, _1), status: "ok") }
+      assert_match(/\Azzcurl has no RBS in the collection yet/, b.send(:sibling_notes, rs[0], rs))
+      assert_nil b.send(:sibling_notes, rs[1], rs)
+    end
+  end
+end
