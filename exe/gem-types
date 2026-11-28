@@ -353,10 +353,21 @@ when "msg-check"
   opts = parse(ARGV)
   sig = File.expand_path(opts[:sig] || abort("--sig is required"))
   gem = Dir[File.join(opts[:workdir], "*.gem")].map { |f| File.basename(f, ".gem").sub(/-[^-]+\z/, "") }.first
-  found = GemTypes::MsgCheck.run(File.read(msg), sig: sig, gem: gem, workdir: opts[:workdir])
+  found = GemTypes::MsgCheck.run(File.read(msg, encoding: "UTF-8"), sig: sig, gem: gem, workdir: opts[:workdir])
   found.each { |level, m| puts "#{level == :error ? 'ERROR' : 'warn '} #{m}" }
   puts "msg-check: ok" if found.empty?
   exit(found.any? { _1.first == :error } ? 1 : 0)
+when "ship"
+  push = !ARGV.delete("--push").nil?
+  i = ARGV.index("--msg") or abort "--msg FILE is required"
+  msg = ARGV.delete_at(i + 1) or abort "--msg FILE is required"
+  ARGV.delete_at(i)
+  opts = parse(ARGV)
+  sig = opts[:sig] || abort("--sig is required")
+  Bundler.with_unbundled_env do
+    ENV.replace(CALLER_ENV)
+    exit(GemTypes::Ship.run(workdir: opts[:workdir], sig: sig, msg: msg, push: push) ? 0 : 1)
+  end
 when "update"
   opts = parse(ARGV)
   cfg = load_config(opts[:workdir], opts)

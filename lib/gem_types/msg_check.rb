@@ -23,6 +23,7 @@ module GemTypes
 
     def run(text, sig:, gem: nil, workdir: nil)
       out = []
+      text = text.dup.force_encoding(Encoding::UTF_8).scrub
       lines = text.lines.map(&:chomp)
       ver = File.basename(File.directory?(sig) ? sig : File.dirname(sig))
       title = lines.first.to_s
