@@ -379,6 +379,22 @@ class GemTypesTest < Minitest::Test
     end
   end
 
+# google-cloud-core.rb only exists for auto-loading and defines nothing;
+# the code is in google/cloud.rb, a shorter path of the gem name.
+def test_namespace_tries_shorter_paths_of_the_gem_name
+  Dir.mktmpdir do |w|
+    lib = File.join(w, "repo", "lib")
+    FileUtils.mkdir_p([File.join(w, "run"), File.join(lib, "zzgt")])
+    File.write(File.join(lib, "zzgt-cloud-core.rb"), "# loaded by auto_load\n")
+    File.write(File.join(lib, "zzgt", "cloud.rb"), "module Zzgt; module Cloud; def self.configure; end; end; end\n")
+    b = batch
+    b.define_singleton_method(:sh) { |env, cmd, chdir, log| system(env, "bash", "-c", cmd.sub("bundle exec ruby", RbConfig.ruby.shellescape), chdir: chdir, out: log, err: %i[child out]) }
+    req, ns = b.send(:namespace, "zzgt-cloud-core", w, {})
+    assert_equal "zzgt/cloud", req
+    assert_equal %w[Zzgt], ns
+  end
+end
+
   def test_namespace_script_skips_namespaces_shared_with_dependencies
     Dir.mktmpdir do |dir|
       lib = File.join(dir, "lib")

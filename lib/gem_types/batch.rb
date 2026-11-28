@@ -383,21 +383,29 @@ module GemTypes
     def namespace(gem, w, env)
       root = gem_root(w)
       lib = File.join(root, "lib")
-      cands = [gem, gem.tr("-", "/"), gem.tr("-", "_")].uniq
-      req = cands.find { |c| File.exist?(File.join(lib, "#{c}.rb")) } ||
-            Dir[File.join(lib, "*.rb")].map { |f| File.basename(f, ".rb") }.first
-      return [nil, []] unless req
+      # Shorter paths too: google-cloud-core.rb only exists for auto-loading
+      # and defines nothing; google/cloud.rb has the code.
+      parts = gem.split("-")
+      cands = [gem, gem.tr("-", "/"), gem.tr("-", "_"), *(parts.size - 1).downto(1).map { |n| parts.first(n).join("/") }].uniq
+      reqs = cands.select { |c| File.exist?(File.join(lib, "#{c}.rb")) }
+      reqs = Dir[File.join(lib, "*.rb")].map { |f| File.basename(f, ".rb") }.first(1) if reqs.empty?
+      return [nil, []] if reqs.empty?
 
-      out = File.join(w, "run", "namespace.txt")
-      deps_out = File.join(w, "run", "requires.txt")
-      FileUtils.rm_f(deps_out)
-      sh(env.merge("RUBYOPT" => "-I#{lib}"),
-         "bundle exec ruby -e #{namespace_script(req, lib, gem, runtime_deps(w), deps_out).shellescape} > #{out.shellescape}",
-         root, File.join(w, "run", "namespace.log"))
-      # Requires that loaded (dependencies first: faraday-net_http's lib
-      # needs Faraday loaded), for `collect --require`.
-      loaded = File.exist?(deps_out) ? File.readlines(deps_out, chomp: true).reject(&:empty?) : []
-      [(loaded + [req]).uniq.join(","), File.exist?(out) ? File.readlines(out, chomp: true).reject(&:empty?).sort : []]
+      result = nil
+      reqs.each do |req|
+        out = File.join(w, "run", "namespace.txt")
+        deps_out = File.join(w, "run", "requires.txt")
+        FileUtils.rm_f(deps_out)
+        sh(env.merge("RUBYOPT" => "-I#{lib}"),
+           "bundle exec ruby -e #{namespace_script(req, lib, gem, runtime_deps(w), deps_out).shellescape} > #{out.shellescape}",
+           root, File.join(w, "run", "namespace.log"))
+        # Requires that loaded (dependencies first: faraday-net_http's lib
+        # needs Faraday loaded), for `collect --require`.
+        loaded = File.exist?(deps_out) ? File.readlines(deps_out, chomp: true).reject(&:empty?) : []
+        result = [(loaded + [req]).uniq.join(","), File.exist?(out) ? File.readlines(out, chomp: true).reject(&:empty?).sort : []]
+        break unless result[1].empty?
+      end
+      result
     end
 
     def runtime_deps(w)
