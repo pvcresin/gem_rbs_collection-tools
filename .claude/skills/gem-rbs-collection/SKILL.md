@@ -70,11 +70,16 @@ scripts, run from its checkout.
    review workflow (`gem-rbs-review`) again after your fixes: a second
    round has found wrong declarations the first one did not (rake's
    private DSL methods, thor's create_file). Fix, rerun `bin/test`, RuboCop and `gem-types live`.
-6. `gem-types pr-text --workdir W --sig <rbs>` drafts the commit message
-   from the RBS, the source (public methods left out) and the saved
-   `verify`/`live` results; edit the bullets into prose. Commit as pvcresin
-   (no trailers), push the branches, and ask the user to tell the upstream
-   session to open the PRs (see section 6).
+6. The author leaves W/commit-message.txt (docs/commit-message.md;
+   `gem-types pr-text` drafts it from the RBS, the source and the saved
+   `verify`/`live` results). Check every claim against the RBS yourself,
+   then `gem-types ship --workdir W --sig <dir> --msg W/commit-message.txt
+   --push`: only gems/<gem>/ changed, msg-check (format, mangled
+   characters, names not in the RBS, numbers that differ from
+   verify/live), bin/test, RuboCop, rbs parse, strict_rubocop_config.rb,
+   the commit (as the repository's git identity, pvcresin, no trailers)
+   and the push. Then ask the user to tell the upstream session to open
+   the PRs (see section 6).
 
 ## 1. Pick gems
 
@@ -441,9 +446,10 @@ directories may fail today's RuboCop once the gem gets a `.rubocop.yml`:
   `ruby/gem_rbs_collection`. One branch per gem (`add-<gem>`), one commit.
   The commit message is the PR description: what is covered, what is left
   out, in English.
-- Amend with `git commit --amend --no-edit`; push with
-  `git push --force-with-lease=<branch>:<old full sha> origin <branch>`
-  after checking the remote still has the old sha.
+- To fix a PR, add a commit and push normally: force pushes are refused
+  by the permission classifier here. If the fix makes the PR body wrong,
+  have the PR session replace that paragraph (send it as plain ASCII or
+  base64, see below).
 - Opening PRs: a cloud session holding the fork cannot open upstream PRs;
   start (or reuse) a session with ruby/gem_rbs_collection as its source and
   give it the branches, titles (commit subjects) and bodies. It will not
