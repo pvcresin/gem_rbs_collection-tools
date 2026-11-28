@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "minitest/mock"
 require "tmpdir"
 require "json"
 require "fileutils"
@@ -956,13 +957,31 @@ end
       assert_equal %w[M#to_s Base#greet], out.split("\n")
     end
   end
-def test_gem_sig_dir_picks_the_newest_matching_shipped_sig
-  Dir.mktmpdir do |home|
-    %w[zzffi-0.9.0 zzffi-1.2.0-x86_64-linux-gnu zzffi-1.1.0 zzffi-compiler-9.0.0].each { FileUtils.mkdir_p(File.join(home, "gems", _1, "sig")) }
-    FileUtils.mkdir_p(File.join(home, "gems", "zzffi-2.0.0"))
-    got = GemTypes::Verify.gem_sig_dir(home, Gem::Dependency.new("zzffi", ">= 1.0"))
-    assert_equal File.join(home, "gems", "zzffi-1.2.0-x86_64-linux-gnu", "sig"), got
-    assert_nil GemTypes::Verify.gem_sig_dir(home, Gem::Dependency.new("zzffi", ">= 3"))
+
+  def test_gem_sig_dir_picks_the_newest_matching_shipped_sig
+    Dir.mktmpdir do |home|
+      %w[zzffi-0.9.0 zzffi-1.2.0-x86_64-linux-gnu zzffi-1.1.0 zzffi-compiler-9.0.0].each { FileUtils.mkdir_p(File.join(home, "gems", _1, "sig")) }
+      FileUtils.mkdir_p(File.join(home, "gems", "zzffi-2.0.0"))
+      got = GemTypes::Verify.gem_sig_dir(home, Gem::Dependency.new("zzffi", ">= 1.0"))
+      assert_equal File.join(home, "gems", "zzffi-1.2.0-x86_64-linux-gnu", "sig"), got
+      assert_nil GemTypes::Verify.gem_sig_dir(home, Gem::Dependency.new("zzffi", ">= 3"))
+    end
   end
-end
+
+  def test_shipped_sig_refs_flags_types_only_a_gem_sig_declares
+    Dir.mktmpdir do |w|
+      shipped = File.join(w, "gemhome", "gems", "zzffi-1.2.0", "sig")
+      FileUtils.mkdir_p(shipped)
+      File.write(File.join(shipped, "zzffi.rbs"), "module ZZFFI\n  class Pointer\n  end\nend\nclass String\nend\n")
+      sig = File.join(w, "gems", "zz", "1.0")
+      FileUtils.mkdir_p(sig)
+      File.write(File.join(sig, "zz.rbs"), "# ZZFFI in a comment\nmodule Zz\n  def self.p: () -> String\nend\n")
+      config = Struct.new(:out).new(File.join(w, "evidence"))
+      GemTypes::Verify.stub(:dep_sigs, [[:s, shipped]]) do
+        assert_empty GemTypes::Verify.shipped_sig_refs(config, sig)
+        File.write(File.join(sig, "zz.rbs"), "module Zz\n  def self.p: () -> ::ZZFFI::Pointer\nend\n")
+        assert_equal ["ZZFFI (from zzffi)"], GemTypes::Verify.shipped_sig_refs(config, sig).map(&:first)
+      end
+    end
+  end
 end

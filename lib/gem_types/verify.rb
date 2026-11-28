@@ -624,6 +624,7 @@ module GemTypes
       out = Lint.run(config, parsed, defs)
       sigdir = File.directory?(sig) ? sig : File.dirname(sig)
       out += Lint.layout(sigdir, gem_deps: gem_dep_names(config))
+      out += shipped_sig_refs(config, sig)
       defs.each do |d|
         sigs = rbs.methods[d[:key]] || (d[:key].end_with?("#initialize") ? rbs.methods[d[:key].sub("#initialize", ".new")] : nil)
         next unless sigs
@@ -917,6 +918,29 @@ module GemTypes
         next if File.expand_path(best) == own
 
         [:s, best]
+      end
+    rescue StandardError
+      []
+    end
+
+    # Findings for top-level names the RBS refers to that only a
+    # dependency's own sig/ declares (ethon's ::FFI::Pointer from ffi).
+    # bin/test passes locally when that gem is installed, but CI only
+    # locks the bundle, so `rbs collection` finds no sig/ there.
+    def shipped_sig_refs(config, sig)
+      gemhome = File.join(File.dirname(config.out), "gemhome")
+      shipped = dep_sigs(config, sig).filter_map { |k, v| v if k == :s && v.start_with?(gemhome) }
+      return [] if shipped.empty?
+
+      body = sig_files(sig).map { File.read(_1, encoding: "UTF-8") }.join("\n").gsub(/#.*$/, "")
+      shipped.flat_map do |dir|
+        dep = File.basename(File.dirname(dir))[/\A(.+?)-\d/, 1]
+        names = Dir[File.join(dir, "**", "*.rbs")].flat_map do |f|
+          File.read(f, encoding: "UTF-8").scan(/^(?:class|module|interface)\s+(?:::)?([A-Z]\w*)/).flatten
+        end.uniq.reject { |n| Object.const_defined?(n) }
+        names.select { |n| body.match?(/(?<![\w:])(?:::)?#{n}(?:::|\b)/) }.map do |n|
+          ["#{n} (from #{dep})", "declared only by the RBS #{dep} ships in its sig/: CI's bin/test does not install gems, so the type will not resolve there; use untyped or an interface"]
+        end
       end
     rescue StandardError
       []
